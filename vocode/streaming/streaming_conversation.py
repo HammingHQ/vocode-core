@@ -479,7 +479,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     )
                 else:
                     message_to_log = agent_response_message.message.text if isinstance(agent_response_message.message, BaseMessage) else "end_of_turn"
-                    logger.debug("Synthesizing speech for message: {}".format(message_to_log))
+                    logger.debug("DBG: Synthesizing speech for message: {}".format(message_to_log))
                     maybe_synthesis_result = await self.conversation.synthesizer.create_speech(
                         agent_response_message.message,
                         self.chunk_size,
@@ -540,8 +540,11 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 Tuple[Union[BaseMessage, EndOfTurn], Optional[SynthesisResult]]
             ],
         ):
+            
             try:
                 message, synthesis_result = item.payload
+                log_message = message.text if isinstance(message, BaseMessage) else "end_of_turn"
+                logger.debug("DBG: SynthesisResultsWorker processing item: {}".format(item))
                 if isinstance(message, EndOfTurn):
                     if self.last_transcript_message is not None:
                         self.last_transcript_message.is_end_of_turn = True
@@ -564,6 +567,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     logger.debug(f"Sending {message.trailing_silence_seconds} seconds of silence")
                 elif isinstance(message, BotBackchannel):
                     logger.debug(f"Sending backchannel: {message}")
+                logger.debug("DBG: SynthesisResultsWorker sending speech to output: {}, {}".format(message.text, TEXT_TO_SPEECH_CHUNK_SIZE_SECONDS))
                 message_sent, cut_off = await self.conversation.send_speech_to_output(
                     message.text,
                     synthesis_result,
