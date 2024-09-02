@@ -357,6 +357,7 @@ class BaseSynthesizer(Generic[SynthesizerConfigType]):
         is_first_text_chunk: bool = False,
         is_sole_text_chunk: bool = False,
     ) -> SynthesisResult:
+        logger.debug("DBG: Creating speech for message: {}".format(message.text))
         if isinstance(message, SilenceMessage):
             return SilenceAudio(
                 message,

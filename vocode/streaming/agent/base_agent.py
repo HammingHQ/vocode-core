@@ -266,6 +266,7 @@ class RespondAgent(BaseAgent[AgentConfigType]):
         end_of_turn_agent_response_tracker = None
 
         async for generated_response in responses:
+            logger.debug("DBG: Generated response: {}".format(json.dumps(generated_response.message.dict())))
             if is_first_response_of_turn:
                 message_type = "UNKNOWN"
                 match generated_response.message:

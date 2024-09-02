@@ -478,7 +478,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         chunk_size=self.chunk_size,
                     )
                 else:
-                    logger.debug("Synthesizing speech for message")
+                    message_to_log = agent_response_message.message.text if isinstance(agent_response_message.message, BaseMessage) else "end_of_turn"
+                    logger.debug("Synthesizing speech for message: {}".format(message_to_log))
                     maybe_synthesis_result = await self.conversation.synthesizer.create_speech(
                         agent_response_message.message,
                         self.chunk_size,
@@ -508,6 +509,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                             agent_response_tracker=item.agent_response_tracker,
                         ),
                     )
+                else:
+                    logger.debug("Synthesis result is None")
                 self.last_agent_response_tracker = item.agent_response_tracker
                 if not isinstance(agent_response_message.message, SilenceMessage):
                     self.is_first_text_chunk = False
