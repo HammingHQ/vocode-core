@@ -3,9 +3,12 @@ from loguru import logger
 
 def ensure_punkt_installed():
     try:
-        from nltk.data import find
+        from nltk.data import find, download
 
         find("tokenizers/punkt")
+
+        download("punkt")
+        download("punkt_tab")
     except LookupError:
         from nltk import download
 
