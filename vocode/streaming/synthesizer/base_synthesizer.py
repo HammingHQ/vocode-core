@@ -314,13 +314,15 @@ class BaseSynthesizer(Generic[SynthesizerConfigType]):
     def get_message_cutoff_from_voice_speed(
         message: BaseMessage, seconds: Optional[float], words_per_minute: int = 150
     ) -> str:
-
+        logger.debug(f"get_message_cutoff_from_voice_speed: {message.text}, {seconds}, {words_per_minute}")
         if seconds is None:
             return message.text
 
         words_per_second = words_per_minute / 60
         estimated_words_spoken = math.floor(words_per_second * seconds)
+        logger.debug(f"estimated_words_spoken: {estimated_words_spoken}")
         tokens = word_tokenize(message.text)
+        logger.debug(f"tokens: {tokens}")
         return TreebankWordDetokenizer().detokenize(tokens[:estimated_words_spoken])
 
     async def get_cached_audio(

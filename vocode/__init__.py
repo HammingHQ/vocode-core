@@ -9,7 +9,7 @@ from loguru import logger
 from vocode.meta import ensure_punkt_installed
 
 environment = {}
-logger.disable("vocode")
+# logger.disable("vocode")
 
 ensure_punkt_installed()
 
