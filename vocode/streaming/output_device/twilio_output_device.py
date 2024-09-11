@@ -115,12 +115,15 @@ class TwilioOutputDevice(AbstractOutputDevice):
 
     async def _process_mark_messages(self):
         while True:
+            logger.debug("Waiting for mark message")
             try:
                 # mark messages are tagged with the chunk ID that is attached to the audio chunk
                 # but they are guaranteed to come in the same order as the audio chunks, and we
                 # don't need to build resiliency there
                 mark_message = await self._mark_message_queue.get()
+                logger.debug(f"Waiting for mark message: Received mark message {mark_message.chunk_id}")
                 item = await self._unprocessed_audio_chunks_queue.get()
+                logger.debug(f"Waiting for mark message: Received unprocessed audio chunk {item.payload.chunk_id}")
             except asyncio.CancelledError:
                 return
 
@@ -131,6 +134,8 @@ class TwilioOutputDevice(AbstractOutputDevice):
                 logger.error(
                     f"Received a mark message out of order with chunk ID {mark_message.chunk_id}"
                 )
+
+            logger.debug(f"Process: Received mark message {mark_message.chunk_id}")
 
             if item.is_interrupted():
                 logger.debug(f"Interrupting audio chunk {audio_chunk.chunk_id}")

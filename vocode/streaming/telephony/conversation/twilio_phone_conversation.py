@@ -130,6 +130,7 @@ class TwilioPhoneConversation(AbstractPhoneConversation[TwilioOutputDevice]):
             self.receive_audio(chunk)
         if data["event"] == "mark":
             chunk_id = data["mark"]["name"]
+            logger.debug(f"Media WS: Received mark event: {chunk_id}")
             self.output_device.enqueue_mark_message(ChunkFinishedMarkMessage(chunk_id=chunk_id))
         elif data["event"] == "stop":
             logger.debug(f"Media WS: Received event 'stop': {message}")
