@@ -902,6 +902,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             processed_event: asyncio.Event,
         ):
             def _on_play():
+                logger.debug(f"_on_play: Chunk {chunk_idx} on_play")
                 if chunk_idx == 0:
                     if started_event:
                         started_event.set()
@@ -916,6 +917,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 if transcript_message:
                     transcript_message.text = synthesis_result.get_message_up_to(seconds_spoken)
 
+                logger.debug(f"_on_play SET: Chunk {chunk_idx} on_play, {transcript_message.text}")
                 processed_event.set()
 
             return _on_play
@@ -924,6 +926,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             processed_event: asyncio.Event,
         ):
             def _on_interrupt():
+                logger.debug(f"_on_interrupt: Chunk {chunk_idx} on_interrupt")
                 processed_event.set()
 
             return _on_interrupt
