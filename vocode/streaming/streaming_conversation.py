@@ -947,6 +947,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             audio_chunk = AudioChunk(
                 data=chunk_result.chunk,
             )
+            logger.debug(f"Created audio chunk {audio_chunk.chunk_id}")
             # register callbacks
             setattr(audio_chunk, "on_play", create_on_play_callback(chunk_idx, processed_event))
             setattr(
@@ -969,7 +970,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         logger.debug("Finished sending chunks to the output device")
 
         if processed_events:
-            logger.debug(f"Waiting for {len(processed_events)} processed events")
+            logger.debug(f"Waiting for {len(processed_events)} processed events, {audio_chunks[-1]}")
             await processed_events[-1].wait()
             logger.debug(f"All {len(processed_events)} processed events finished")
 

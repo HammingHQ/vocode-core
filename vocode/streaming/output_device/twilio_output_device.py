@@ -133,10 +133,12 @@ class TwilioOutputDevice(AbstractOutputDevice):
                 )
 
             if item.is_interrupted():
+                logger.debug(f"Interrupting audio chunk {audio_chunk.chunk_id}")
                 audio_chunk.on_interrupt()
                 audio_chunk.state = ChunkState.INTERRUPTED
                 continue
 
+            logger.debug(f"Playing audio chunk {audio_chunk.chunk_id}")
             audio_chunk.on_play()
             audio_chunk.state = ChunkState.PLAYED
 
