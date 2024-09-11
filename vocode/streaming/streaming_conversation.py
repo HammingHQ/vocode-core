@@ -478,14 +478,14 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         chunk_size=self.chunk_size,
                     )
                 else:
-                    logger.debug("Synthesizing speech for message", agent_response_message.message)
+                    logger.debug("Synthesizing speech for message: {}".format(agent_response_message.message))
                     maybe_synthesis_result = await self.conversation.synthesizer.create_speech(
                         agent_response_message.message,
                         self.chunk_size,
                         is_first_text_chunk=self.is_first_text_chunk,
                         is_sole_text_chunk=agent_response_message.is_sole_text_chunk,
                     )
-                    logger.debug("Synthesis result", maybe_synthesis_result)
+                    logger.debug("Synthesis result: {}".format(maybe_synthesis_result))
                 if create_speech_span:
                     create_speech_span.finish()
                 # For input streaming synthesizers, subsequent chunks are contained in the same SynthesisResult
@@ -509,7 +509,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                             agent_response_tracker=item.agent_response_tracker,
                         ),
                     )
-                    logger.debug("Synthesis result sent to consumer")
+                    logger.debug("Synthesis result sent to consumer!")
                 self.last_agent_response_tracker = item.agent_response_tracker
                 if not isinstance(agent_response_message.message, SilenceMessage):
                     self.is_first_text_chunk = False
@@ -529,7 +529,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self,
             conversation: "StreamingConversation",
         ):
-            super().__init__()
+            super().__init__(debug=True)
             self.conversation = conversation
             self.last_transcript_message: Optional[Message] = None
 
@@ -541,7 +541,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         ):
             try:
                 message, synthesis_result = item.payload
-                logger.debug("Synthesis Result processs", message)
+                logger.debug("Synthesis Result processs: {}".format(message))
                 if isinstance(message, EndOfTurn):
                     if self.last_transcript_message is not None:
                         self.last_transcript_message.is_end_of_turn = True
@@ -564,7 +564,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     logger.debug(f"Sending {message.trailing_silence_seconds} seconds of silence")
                 elif isinstance(message, BotBackchannel):
                     logger.debug(f"Sending backchannel: {message}")
-                logger.debug("Synthesis: Sending message to output", message.text)
+                logger.debug("Synthesis: Sending message to output: {}".format(message.text))
                 message_sent, cut_off = await self.conversation.send_speech_to_output(
                     message.text,
                     synthesis_result,

@@ -194,10 +194,12 @@ InterruptibleEventType = TypeVar("InterruptibleEventType", bound=InterruptibleEv
 class InterruptibleWorker(AsyncWorker[InterruptibleEventType]):
     def __init__(
         self,
+        debug: bool = False,
         interruptible_event_factory: InterruptibleEventFactory = InterruptibleEventFactory(),
         max_concurrency=2,
     ) -> None:
         super().__init__()
+        self.debug = debug
         self.max_concurrency = max_concurrency
         self.interruptible_event_factory = interruptible_event_factory
         self.current_task = None
@@ -206,17 +208,27 @@ class InterruptibleWorker(AsyncWorker[InterruptibleEventType]):
     async def _run_loop(self):
         # TODO Implement concurrency with max_nb_of_thread
         while True:
+            if self.debug:
+                logger.debug("InterruptibleWorker: Waiting for input")
             try:
                 item = await self._input_queue.get()
             except asyncio.CancelledError:
                 return
 
+            if self.debug:
+                logger.debug(f"InterruptibleWorker: Received item: {item}")
+
             if item.is_interrupted():
+                if self.debug:
+                    logger.debug("InterruptibleWorker: Item is interrupted")
                 continue
             self.interruptible_event = item
             self.current_task = asyncio_create_task(
                 self.process(item),
             )
+
+            if self.debug:
+                logger.debug(f"InterruptibleWorker: Created task: {self.current_task}")
 
             try:
                 await self.current_task
@@ -224,6 +236,10 @@ class InterruptibleWorker(AsyncWorker[InterruptibleEventType]):
                 return
             except Exception:
                 logger.exception("InterruptibleWorker", exc_info=True)
+
+            if self.debug:
+                logger.debug("InterruptibleWorker: Task is done")
+
             self.interruptible_event.is_interruptible = False
             self.current_task = None
 
