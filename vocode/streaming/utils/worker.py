@@ -231,7 +231,11 @@ class InterruptibleWorker(AsyncWorker[InterruptibleEventType]):
                 logger.debug(f"InterruptibleWorker: Created task: {self.current_task}")
 
             try:
+                if self.debug:
+                    logger.debug(f"InterruptibleWorker: Waiting for task: {self.current_task}")
                 await self.current_task
+                if self.debug:
+                    logger.debug(f"InterruptibleWorker: Task is done: {self.current_task}")
             except asyncio.CancelledError:
                 return
             except Exception:

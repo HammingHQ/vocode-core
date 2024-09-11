@@ -938,6 +938,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         processed_events: List[asyncio.Event] = []
         interrupted_before_all_chunks_sent = False
         async for chunk_idx, chunk_result in enumerate_async_iter(synthesis_result.chunk_generator):
+            logger.debug(f"Send Speech To Output: Sending chunk {chunk_idx}")
             if stop_event.is_set():
                 logger.debug("Interrupted before all chunks were sent")
                 interrupted_before_all_chunks_sent = True
@@ -994,6 +995,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         message_sent = transcript_message.text if transcript_message and cut_off else message
         if synthesis_result.synthesis_total_span:
             synthesis_result.synthesis_total_span.finish()
+
+        logger.debug(f"Send Speech To Output: Done Processing Event: {message}")
         return message_sent, cut_off
 
     def mark_terminated(self, bot_disconnect: bool = False):
