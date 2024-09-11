@@ -915,7 +915,10 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
 
                 seconds_spoken += seconds_per_chunk
                 if transcript_message:
-                    transcript_message.text = synthesis_result.get_message_up_to(seconds_spoken)
+                    try:
+                        transcript_message.text = synthesis_result.get_message_up_to(seconds_spoken)
+                    except Exception as e:
+                        logger.error(f"Error getting message up to: {e}")
 
                 logger.debug(f"_on_play SET: Chunk {chunk_idx} on_play, {transcript_message.text}")
                 processed_event.set()
