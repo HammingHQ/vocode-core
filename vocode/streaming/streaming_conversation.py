@@ -903,19 +903,19 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         ):
             def _on_play():
                 logger.debug(f"_on_play: Chunk {chunk_idx} on_play")
-                # if chunk_idx == 0:
-                #     if started_event:
-                #         started_event.set()
-                #     if first_chunk_span:
-                #         self._track_first_chunk(first_chunk_span, synthesis_result)
+                if chunk_idx == 0:
+                    if started_event:
+                        started_event.set()
+                    # if first_chunk_span:
+                    #     self._track_first_chunk(first_chunk_span, synthesis_result)
 
-                # nonlocal seconds_spoken
+                nonlocal seconds_spoken
 
-                # self.mark_last_action_timestamp()
+                self.mark_last_action_timestamp()
 
-                # seconds_spoken += seconds_per_chunk
-                # if transcript_message:
-                #     transcript_message.text = synthesis_result.get_message_up_to(seconds_spoken)
+                seconds_spoken += seconds_per_chunk
+                if transcript_message:
+                    transcript_message.text = synthesis_result.get_message_up_to(seconds_spoken)
 
                 logger.debug(f"_on_play SET: Chunk {chunk_idx} on_play, {transcript_message.text}")
                 processed_event.set()
