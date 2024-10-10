@@ -816,7 +816,12 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         self.transcriber.attach_speed_manager(self.speed_manager)
         self.agent.attach_speed_manager(self.speed_manager)
 
-        self.events_manager = events_manager or EventsManager()
+        self.should_run_events_manager = False
+        self.events_manager = events_manager
+        if not self.events_manager:
+            self.should_run_events_manager = True
+            self.events_manager = EventsManager()
+        
         self.events_task: Optional[asyncio.Task] = None
         self.transcript = Transcript()
         self.transcript.attach_events_manager(self.events_manager)
@@ -898,10 +903,14 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         self.check_for_idle_task = asyncio_create_task(
             self.check_for_idle(),
         )
-        if len(self.events_manager.subscriptions) > 0:
+        if self.should_run_events_manager and len(self.events_manager.subscriptions) > 0:
             self.events_task = asyncio_create_task(
                 self.events_manager.start(),
             )
+        elif not self.should_run_events_manager:
+            logger.debug("events_manager task is managed by the caller")
+        else:
+            logger.debug("events_manager.subscriptions is empty")
 
     async def _ivr_handoff(self, initial_message: Optional[BaseMessage] = None):
         logger.debug("Waiting for IVR handoff")
@@ -1231,10 +1240,12 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         if self.check_for_idle_task:
             logger.debug("Terminating check_for_idle Task")
             self.check_for_idle_task.cancel()
-        if self.events_manager and self.events_task:
+        if self.should_run_events_manager and self.events_manager and self.events_task:
             logger.debug("Terminating events Task")
             self.events_task.cancel()
             await self.events_manager.flush()
+        else:
+            logger.debug("Terminating events: Skipping because events_manager task is managed by the caller")
         logger.debug("Tearing down synthesizer")
         await self.synthesizer.tear_down()
         logger.debug("Terminating agent")
