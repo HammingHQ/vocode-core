@@ -51,8 +51,7 @@ from vocode.streaming.models.message import BaseMessage, BotBackchannel, LLMToke
 from vocode.streaming.models.telephony import (
     IvrConfig,
     IvrDagConfig,
-    IvrNode,
-    IvrNodeType,
+    IvrLinkType,
     IvrMessageNode,
     IvrHoldNode,
 )
@@ -605,6 +604,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self._run_task: Optional[asyncio.Task] = None
             self._listen_queue: Optional[asyncio.Queue[str]] = None
             self._listen_queue_lock = asyncio.Lock()
+            self._dtmf_queue: Optional[asyncio.Queue[str]] = None
+            self._dtmf_queue_lock = asyncio.Lock()
             self._finished_event = asyncio.Event()
             self.fuzz_threshold = dag.fuzz_threshold or 80
 
@@ -628,6 +629,19 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         async def _set_listen_queue(self, listen_queue: asyncio.Queue[str]):
             async with self._listen_queue_lock:
                 self._listen_queue = listen_queue
+
+        async def _get_dtmf_queue(self) -> Optional[asyncio.Queue[str]]:
+            async with self._dtmf_queue_lock:
+                return self._dtmf_queue
+
+        async def _set_dtmf_queue(self, dtmf_queue: asyncio.Queue[str]):
+            async with self._dtmf_queue_lock:
+                self._dtmf_queue = dtmf_queue
+
+        async def receive_dtmf(self, digit: str):
+            dtmf_queue = await self._get_dtmf_queue()
+            if dtmf_queue:
+                dtmf_queue.put_nowait(digit)
 
         async def _send_single_message(self, message: str):
             message_tracker = asyncio.Event()
@@ -661,8 +675,14 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
 
                     if isinstance(current_node, IvrMessageNode):
                         loop_task = asyncio_create_task(self._loop_message(current_node.message))
+                        
                         available_commands = [link.message for link in current_node.links]
-                        command = await self.wait_for_command(available_commands)
+                        if current_node.link_type == IvrLinkType.COMMAND:
+                            command = await self.wait_for_command(available_commands)
+                        elif current_node.link_type == IvrLinkType.DTMF:
+                            command = await self.wait_for_dtmf(available_commands)
+                        else:
+                            raise Exception(f"IvrWorker unknown link type: {current_node.link_type}")
                         
                         loop_task.cancel()
                         await loop_task
@@ -727,6 +747,19 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     logger.debug(
                         f"IVR received command: {received_message}, but {available_commands} were expected"
                     )
+
+        async def wait_for_dtmf(self, available_commands: List[str]) -> str:
+            dtmf_queue = asyncio.Queue()
+            await self._set_dtmf_queue(dtmf_queue)
+
+            while True:
+                digit = await self._dtmf_queue.get()
+                for command in available_commands:
+                    if command.lower() == digit.lower():
+                        logger.debug(f"IVR received DTMF command: {command}")
+                        await self._set_dtmf_queue(None)
+                        return command
+        
 
         async def process(self, item: InterruptibleEvent[TranscriptionAgentInput]):
             transcription = item.payload.transcription
@@ -983,6 +1016,10 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
 
         self.set_check_for_idle_paused(False)
         self.initial_message_tracker.set()
+
+    async def receive_dtmf(self, digit: str):
+        if self.ivr_worker:
+            await self.ivr_worker.receive_dtmf(digit)
 
     async def action_on_idle(self):
         logger.debug("Conversation idle for too long, terminating")

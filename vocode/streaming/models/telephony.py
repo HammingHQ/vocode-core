@@ -118,10 +118,15 @@ class IvrNodeType(str, Enum):
     HOLD = "ivr_node_hold"
     END = "ivr_node_end"
 
+class IvrLinkType(str, Enum):
+    COMMAND = "command"
+    DTMF = "dtmf"
+
 class IvrBaseNode(TypedModel, type=IvrNodeType.BASE.value):  # type: ignore
     id: str
     wait_delay: Optional[float] = 0
     is_final: Optional[bool] = False
+    link_type: Optional[IvrLinkType] = IvrLinkType.COMMAND
     links: Optional[List[IvrLink]] = []
 
 
