@@ -651,7 +651,10 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 try:
                     current_node = self.dag.nodes[self._current_node_id]
                     logger.debug(f"IvrWorker current node: {current_node}")
-                    
+
+                    if current_node.wait_delay:
+                        await asyncio.sleep(current_node.wait_delay)
+
                     if current_node.is_final:
                         logger.debug("IvrWorker is finished")
                         break
