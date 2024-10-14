@@ -10,7 +10,7 @@ from vocode.streaming.models.telephony import (
     TwilioConfig,
     VonageCallConfig,
     VonageConfig,
-    IvrConfig,
+    IvrDagConfig,
 )
 from vocode.streaming.models.transcriber import TranscriberConfig
 from vocode.streaming.telephony.client.abstract_telephony_client import AbstractTelephonyClient
@@ -33,7 +33,7 @@ class OutboundCall:
         transcriber_config: Optional[TranscriberConfig] = None,
         synthesizer_config: Optional[SynthesizerConfig] = None,
         conversation_id: Optional[str] = None,
-        ivr_config: Optional[IvrConfig] = None,
+        ivr_dag: Optional[IvrDagConfig] = None,
         sentry_tags: Dict[str, str] = {},
         digits: Optional[
             str
@@ -54,7 +54,7 @@ class OutboundCall:
         self.output_to_speaker = output_to_speaker
         self.sentry_tags = sentry_tags
         self.digits = digits
-        self.ivr_config = ivr_config
+        self.ivr_dag = ivr_dag
 
     def create_telephony_client(self) -> AbstractTelephonyClient:
         if isinstance(self.telephony_config, TwilioConfig):
@@ -108,7 +108,7 @@ class OutboundCall:
                 sentry_tags=self.sentry_tags,
                 telephony_params=self.telephony_params,
                 direction="outbound",
-                ivr_config=self.ivr_config,
+                ivr_dag=self.ivr_dag,
             )
         elif isinstance(self.telephony_client, VonageClient):
             call_config = VonageCallConfig(

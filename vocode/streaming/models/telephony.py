@@ -120,9 +120,9 @@ class IvrNodeType(str, Enum):
 
 class IvrBaseNode(TypedModel, type=IvrNodeType.BASE.value):  # type: ignore
     id: str
-    wait_delay: float = 5
-    is_final: bool = False
-    links: List[IvrLink] = []
+    wait_delay: Optional[float] = 0
+    is_final: Optional[bool] = False
+    links: Optional[List[IvrLink]] = []
 
 
 class IvrMessageNode(IvrBaseNode, type=IvrNodeType.MESSAGE.value):  # type: ignore
