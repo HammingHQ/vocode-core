@@ -139,4 +139,7 @@ class TwilioPhoneConversation(AbstractPhoneConversation[TwilioOutputDevice]):
             logger.debug(f"Media WS: Received event 'stop': {message}")
             logger.debug("Stopping...")
             return TwilioPhoneConversationWebsocketAction.CLOSE_WEBSOCKET
+        elif data["event"] == "dtmf":
+            digit = data["dtmf"]["digit"]
+            await self.receive_dtmf(digit)
         return None
