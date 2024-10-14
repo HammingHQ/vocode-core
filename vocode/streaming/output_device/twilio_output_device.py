@@ -13,12 +13,13 @@ import requests
 import boto3
 from botocore.exceptions import ClientError
 from urllib.parse import urlparse
-
+from s3path import S3Path
 from fastapi import WebSocket
 from fastapi.websockets import WebSocketState
 from loguru import logger
 from pydantic import BaseModel
 from pydub import AudioSegment
+from s3path import S3Path
 
 from vocode.streaming.output_device.abstract_output_device import AbstractOutputDevice
 from vocode.streaming.output_device.audio_chunk import AudioChunk, ChunkState
@@ -59,7 +60,6 @@ class TwilioOutputDevice(AbstractOutputDevice):
         super().__init__(
             sampling_rate=DEFAULT_SAMPLING_RATE, 
             audio_encoding=DEFAULT_AUDIO_ENCODING,
-            background_noise_url=background_noise_url
         )
         self.ws = ws
         self.stream_sid = stream_sid
@@ -75,12 +75,13 @@ class TwilioOutputDevice(AbstractOutputDevice):
         self._audio_queue: asyncio.Queue[AudioItem] = asyncio.Queue()
 
         # Initialize S3 client
-        self.s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION')
-        )
+        if self.background_noise_url:
+            self.s3_client = boto3.client(
+                's3',
+                aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+                region_name=os.environ.get('AWS_REGION')
+            )
 
         if self.background_noise == BackgroundNoiseType.CUSTOM and self.background_noise_url:
             asyncio.create_task(self._prefetch_background_noise())
@@ -88,9 +89,9 @@ class TwilioOutputDevice(AbstractOutputDevice):
     async def _prefetch_background_noise(self):
         try:
             # Parse the S3 URL
-            parsed_url = urlparse(self.background_noise_url)
-            bucket_name = parsed_url.netloc.split('.')[0]
-            key = parsed_url.path.lstrip('/')
+            s3_path = S3Path(self.background_noise_url)
+            bucket_name = s3_path.bucket
+            key = str(s3_path.key)
 
             # Download the file from S3
             response = self.s3_client.get_object(Bucket=bucket_name, Key=key)
@@ -224,15 +225,8 @@ class TwilioOutputDevice(AbstractOutputDevice):
     async def _send_background_noise(self):
         background_noise_path = self._get_background_noise_path()
         
-        if not background_noise_path and self.background_noise_url:
-            await self._prefetch_background_noise()
-        elif not background_noise_path and not self.background_noise_file:
-            logger.error("Could not find background noise file. Falling back to silence.")
-            # Generate 1 second of silence
-            silent_chunk = b'\x7f' * 8000  # 8000 samples of silence for 1 second
-            while True:
-                await asyncio.sleep(1)
-                self._send_noise_message(silent_chunk)
+        if not background_noise_path and not self.background_noise_file:
+            logger.error("Could not find background noise file.")
             return
         
         if background_noise_path:

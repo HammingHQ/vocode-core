@@ -16,11 +16,10 @@ class AbstractOutputDevice(AsyncWorker[InterruptibleEvent[AudioChunk]]):
     - if the interruptible event marker is set, then it must also mark the chunk as interrupted
     """
 
-    def __init__(self, sampling_rate: int, audio_encoding: AudioEncoding, background_noise_url: Optional[str] = None):
+    def __init__(self, sampling_rate: int, audio_encoding: AudioEncoding):
         super().__init__()
         self.sampling_rate = sampling_rate
         self.audio_encoding = audio_encoding
-        self.background_noise_url = background_noise_url
 
     @abstractmethod
     def interrupt(self):

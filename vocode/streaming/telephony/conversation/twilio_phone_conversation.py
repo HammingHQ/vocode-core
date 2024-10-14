@@ -57,11 +57,10 @@ class TwilioPhoneConversation(AbstractPhoneConversation[TwilioOutputDevice]):
         noise_suppression: bool = False,  # is currently a no-op
         ivr_config: Optional[IvrConfig] = None,
         ivr_dag: Optional[IvrDagConfig] = None,
-        background_noise_url: Optional[str] = None,
     ):
         output_device = TwilioOutputDevice(
             background_noise=agent_config.background_noise,
-            background_noise_url=background_noise_url
+            background_noise_url=agent_config.background_noise_url
         )
         super().__init__(
             direction=direction,

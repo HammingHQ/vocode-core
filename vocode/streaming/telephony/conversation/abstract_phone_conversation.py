@@ -51,7 +51,6 @@ class AbstractPhoneConversation(StreamingConversation[TelephonyOutputDeviceType]
         speed_coefficient: float = 1.0,
         ivr_config: Optional[IvrConfig] = None,
         ivr_dag: Optional[IvrDagConfig] = None,
-        background_noise_url: Optional[str] = None,
     ):
         conversation_id = conversation_id or create_conversation_id()
         ctx_conversation_id.set(conversation_id)
