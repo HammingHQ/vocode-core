@@ -1,4 +1,6 @@
 import abc
+import aiohttp
+import asyncio
 from functools import partial
 from typing import List, Optional
 
@@ -28,12 +30,15 @@ from vocode.streaming.telephony.client.abstract_telephony_client import Abstract
 from vocode.streaming.telephony.client.twilio_client import TwilioClient
 from vocode.streaming.telephony.client.vonage_client import VonageClient
 from vocode.streaming.telephony.config_manager.base_config_manager import BaseConfigManager
+from vocode.streaming.telephony.config_manager.base_dynamic_call_manager import BaseDynamicCallManager
 from vocode.streaming.telephony.server.router.calls import CallsRouter
 from vocode.streaming.telephony.templater import get_connection_twiml
 from vocode.streaming.transcriber.abstract_factory import AbstractTranscriberFactory
 from vocode.streaming.transcriber.default_factory import DefaultTranscriberFactory
 from vocode.streaming.utils import create_conversation_id
+from vocode.streaming.utils.create_task import asyncio_create_task
 from vocode.streaming.utils.events_manager import EventsManager
+from vocode.streaming.utils.async_requester import AsyncRequestor
 
 
 class AbstractInboundCallConfig(BaseModel, abc.ABC):
@@ -45,6 +50,7 @@ class AbstractInboundCallConfig(BaseModel, abc.ABC):
     verify_token: Optional[bool] = False
     ivr_config: Optional[IvrConfig] = None
     ivr_dag: Optional[IvrDagConfig] = None
+    dynamic_call: Optional[bool] = None
 
 
 class TwilioInboundCallConfig(AbstractInboundCallConfig):
@@ -60,6 +66,12 @@ class VonageAnswerRequest(BaseModel):
     from_: str = Field(..., alias="from")
     uuid: str
 
+class TwilioBadRequestException(ValueError):
+    pass
+
+class TwilioException(ValueError):
+    pass
+
 
 class TelephonyServer:
     def __init__(
@@ -71,11 +83,13 @@ class TelephonyServer:
         agent_factory: AbstractAgentFactory = DefaultAgentFactory(),
         synthesizer_factory: AbstractSynthesizerFactory = DefaultSynthesizerFactory(),
         events_manager: Optional[EventsManager] = None,
+        dynamic_call_manager: Optional[BaseDynamicCallManager] = None,
     ):
         self.base_url = base_url
         self.router = APIRouter()
         self.config_manager = config_manager
         self.events_manager = events_manager
+        self.dynamic_call_manager = dynamic_call_manager
         self.security = HTTPBearer(auto_error=False)
         self.router.include_router(
             CallsRouter(
@@ -136,10 +150,21 @@ class TelephonyServer:
             twilio_to: str = Form(alias="To"),
             _: str = Depends(verify_token),
         ) -> Response:
+            conversation_id = create_conversation_id()
+            if self.dynamic_call_manager and inbound_call_config.dynamic_call:
+                agent_config = await self.dynamic_call_manager.create_call(
+                    twilio_sid,
+                    twilio_from,
+                    twilio_to, 
+                    conversation_id
+                )
+                asyncio_create_task(self._start_recording(twilio_config, twilio_sid))
+            else:
+                agent_config = inbound_call_config.agent_config
             call_config = TwilioCallConfig(
                 transcriber_config=inbound_call_config.transcriber_config
                 or TwilioCallConfig.default_transcriber_config(),
-                agent_config=inbound_call_config.agent_config,
+                agent_config=agent_config,
                 synthesizer_config=inbound_call_config.synthesizer_config
                 or TwilioCallConfig.default_synthesizer_config(),
                 twilio_config=twilio_config,
@@ -150,8 +175,6 @@ class TelephonyServer:
                 ivr_config=inbound_call_config.ivr_config,
                 ivr_dag=inbound_call_config.ivr_dag,
             )
-
-            conversation_id = create_conversation_id()
             await self.config_manager.save_config(conversation_id, call_config)
             return get_connection_twiml(base_url=self.base_url, call_id=conversation_id)
 
@@ -214,3 +237,36 @@ class TelephonyServer:
 
     def get_router(self) -> APIRouter:
         return self.router
+    
+    async def _start_recording(self, twilio_config: TwilioConfig, twilio_sid: str):
+        logger.info(f"Starting recording for {twilio_sid}")
+        await asyncio.sleep(1) # TODO: run this in a loop until recording is started
+        auth = aiohttp.BasicAuth(
+            login=twilio_config.account_sid,
+            password=twilio_config.auth_token,
+        )
+        # https://help.twilio.com/articles/360010317333-Recording-Incoming-Twilio-Voice-Calls
+        async with AsyncRequestor().get_session().post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{twilio_config.account_sid}/Calls/{twilio_sid}/Recordings.json",
+            auth=auth,
+            data={
+                "RecordingStatusCallback": f"https://{self.base_url}/v1/recordings/webhook",
+                "RecordingChannels": "dual",
+                "RecordingStatusCallbackEvent": "completed",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        ) as response:
+            if not response.ok:
+                if response.status == 400:
+                    logger.warning(
+                        f"Failed to create recording: {response.status} {response.reason} {await response.json()}"
+                    )
+                    raise TwilioBadRequestException(
+                        "Telephony provider rejected recording."
+                    )
+                else:
+                    raise TwilioException(
+                        f"Twilio failed to create recording: {response.status} {response.reason}"
+                    )
+            response = await response.json()
+            logger.info(f"Recording created: {response}")
