@@ -9,12 +9,17 @@ import os
 import io
 import time
 from dataclasses import dataclass
-
+import requests
+import boto3
+from botocore.exceptions import ClientError
+from urllib.parse import urlparse
+from s3path import S3Path
 from fastapi import WebSocket
 from fastapi.websockets import WebSocketState
 from loguru import logger
 from pydantic import BaseModel
 from pydub import AudioSegment
+from s3path import S3Path
 
 from vocode.streaming.output_device.abstract_output_device import AbstractOutputDevice
 from vocode.streaming.output_device.audio_chunk import AudioChunk, ChunkState
@@ -23,7 +28,6 @@ from vocode.streaming.constants import BackgroundNoiseType
 from vocode.streaming.utils.create_task import asyncio_create_task
 from vocode.streaming.utils.dtmf_utils import DTMFToneGenerator, KeypadEntry
 from vocode.streaming.utils.worker import InterruptibleEvent
-
 
 BACKGROUND_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "background_audio")
 
@@ -50,22 +54,54 @@ class TwilioOutputDevice(AbstractOutputDevice):
         self,
         ws: Optional[WebSocket] = None,
         stream_sid: Optional[str] = None,
-        background_noise: Optional[BackgroundNoiseType] = None,
+        background_noise: Optional[Union[BackgroundNoiseType, str]] = None,
+        background_noise_url: Optional[str] = None,
     ):
         super().__init__(
-            sampling_rate=DEFAULT_SAMPLING_RATE, audio_encoding=DEFAULT_AUDIO_ENCODING
+            sampling_rate=DEFAULT_SAMPLING_RATE, 
+            audio_encoding=DEFAULT_AUDIO_ENCODING,
         )
         self.ws = ws
         self.stream_sid = stream_sid
         self.active = True
         self.background_noise = background_noise
-
+        self.background_noise_url = background_noise_url
+        self.background_noise_file = None
         self._twilio_events_queue: asyncio.Queue[str] = asyncio.Queue()
         self._mark_message_queue: asyncio.Queue[MarkMessage] = asyncio.Queue()
         self._unprocessed_audio_chunks_queue: asyncio.Queue[InterruptibleEvent[AudioChunk]] = (
             asyncio.Queue()
         )
         self._audio_queue: asyncio.Queue[AudioItem] = asyncio.Queue()
+
+        # Initialize S3 client
+        if self.background_noise_url:
+            self.s3_client = boto3.client(
+                's3',
+                aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+                region_name=os.environ.get('AWS_REGION')
+            )
+
+        if self.background_noise == BackgroundNoiseType.CUSTOM and self.background_noise_url:
+            asyncio.create_task(self._prefetch_background_noise())
+
+    async def _prefetch_background_noise(self):
+        try:
+            # Parse the S3 URL
+            s3_path = S3Path(self.background_noise_url)
+            bucket_name = s3_path.bucket
+            key = str(s3_path.key)
+
+            # Download the file from S3
+            response = self.s3_client.get_object(Bucket=bucket_name, Key=key)
+            self.background_noise_file = response['Body'].read()
+
+            logger.info(f"Successfully fetched background noise from S3: {self.background_noise_url}")
+        except ClientError as e:
+            logger.error(f"Error fetching background noise from S3: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error while prefetching background noise: {str(e)}")
 
     def consume_nonblocking(self, item: InterruptibleEvent[AudioChunk]):
         if not item.is_interrupted():
@@ -147,13 +183,11 @@ class TwilioOutputDevice(AbstractOutputDevice):
         process_mark_messages_task = asyncio_create_task(self._process_mark_messages())
 
         if self.background_noise:
-            logger.info(f"Setting background noise task for {self.background_noise}")
             send_background_noise_task = asyncio_create_task(self._send_background_noise())
             await asyncio.gather(
                 send_twilio_messages_task, process_mark_messages_task, send_background_noise_task
             )
         else:
-            logger.info("No background noise task")
             await asyncio.gather(
                 send_twilio_messages_task, process_mark_messages_task
             )
@@ -184,17 +218,26 @@ class TwilioOutputDevice(AbstractOutputDevice):
     def _get_background_noise_path(self) -> Optional[str]:
         if self.background_noise is None:
             return None
+        if self.background_noise == BackgroundNoiseType.CUSTOM:
+            return None
         return f"{BACKGROUND_AUDIO_PATH}/{self.background_noise.value}.wav"
 
     async def _send_background_noise(self):
         background_noise_path = self._get_background_noise_path()
-        if not background_noise_path:
-            logger.error("Could not find background noise file")
+        
+        if not background_noise_path and not self.background_noise_file:
+            logger.error("Could not find background noise file.")
             return
-        sound = AudioSegment.from_file(background_noise_path)
+        
+        if background_noise_path:
+            sound = AudioSegment.from_file(background_noise_path)
+        else:
+            sound = AudioSegment.from_wav(io.BytesIO(self.background_noise_file))
+
         sound = sound.set_channels(AUDIO_CHANNELS)
         sound = sound.set_frame_rate(AUDIO_FRAME_RATE)
         sound = sound.set_sample_width(AUDIO_SAMPLE_WIDTH)
+
         # sound = sound + 2  # 2dB louder
         output_bytes_io = io.BytesIO()
         sound.export(output_bytes_io, format="raw")

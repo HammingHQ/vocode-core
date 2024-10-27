@@ -1,5 +1,6 @@
 import asyncio
 from abc import abstractmethod
+from typing import Optional
 
 from vocode.streaming.models.audio import AudioEncoding
 from vocode.streaming.output_device.audio_chunk import AudioChunk

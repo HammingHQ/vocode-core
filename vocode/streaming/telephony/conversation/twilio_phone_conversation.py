@@ -58,13 +58,17 @@ class TwilioPhoneConversation(AbstractPhoneConversation[TwilioOutputDevice]):
         ivr_config: Optional[IvrConfig] = None,
         ivr_dag: Optional[IvrDagConfig] = None,
     ):
+        output_device = TwilioOutputDevice(
+            background_noise=agent_config.background_noise,
+            background_noise_url=agent_config.background_noise_url
+        )
         super().__init__(
             direction=direction,
             from_phone=from_phone,
             to_phone=to_phone,
             base_url=base_url,
             config_manager=config_manager,
-            output_device=TwilioOutputDevice(background_noise=agent_config.background_noise),
+            output_device=output_device,
             agent_config=agent_config,
             transcriber_config=transcriber_config,
             synthesizer_config=synthesizer_config,
