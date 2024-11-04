@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Union
 from urllib.parse import urlencode
+import random
 
 import sentry_sdk
 import websockets
@@ -218,7 +219,7 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
             current_buffer, deepgram_response, time_silent
         )
         if is_endpoint:
-            logger.info("Endpoint detected", extra=log_params)
+            logger.info(f"Endpoint detected: {log_params}")
         return is_endpoint
 
     @staticmethod
@@ -277,6 +278,13 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
         assert endpointing_config is not None
 
         log_params = {"endpointing_type": endpointing_config.type}
+
+        if self.transcriber_config.endpointing_config.simulate_interrupt:
+            # When simulating interruptions, we need the transcript to publish 
+            # events, even when it's not an actual endpoint.
+            if random.random() < 0.8:
+                log_params["source"] = "random_interrupt"
+                return True, log_params
 
         if isinstance(
             endpointing_config,

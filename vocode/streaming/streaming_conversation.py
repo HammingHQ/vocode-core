@@ -117,6 +117,7 @@ BACKCHANNEL_PATTERNS = [
     "makes sense",
 ]
 LOW_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD = 3
+LOWEST_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD = 50
 
 
 class StreamingConversation(AudioPipeline[OutputDeviceType]):
@@ -172,9 +173,10 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.has_associated_unignored_utterance: bool = False
             self.human_backchannels_buffer: List[Transcription] = []
             self.ignore_next_message: bool = False
+            self.simulate_interrupt = self.conversation.transcriber.transcriber_config.endpointing_config.simulate_interrupt
 
         def should_ignore_utterance(self, transcription: Transcription):
-            if self.has_associated_unignored_utterance:
+            if self.has_associated_unignored_utterance and not self.simulate_interrupt:
                 return False
             bot_still_speaking = self.is_bot_still_speaking()
             if self.has_associated_ignored_utterance or bot_still_speaking:
@@ -192,8 +194,14 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             ):
                 logger.info(f"High interrupt sensitivity; {num_words} word(s) not a backchannel")
                 return False
+            
+            threshold = LOW_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD
+            if self.simulate_interrupt:
+                # When simulating interruptions, we need a high threshold so we don't get 
+                # interrupted when we're just delivering the interruption.
+                threshold = LOWEST_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD
 
-            if num_words <= LOW_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD:
+            if num_words <= threshold:
                 return True
             cleaned = re.sub("[^\w\s]", "", transcription.message).strip().lower()
             return any(re.fullmatch(regex, cleaned) for regex in BACKCHANNEL_PATTERNS)
