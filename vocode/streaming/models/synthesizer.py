@@ -190,6 +190,7 @@ class PlayHtSynthesizerConfig(SynthesizerConfig, type=SynthesizerType.PLAY_HT.va
     on_prem: bool = False
     on_prem_provider: Literal["aws", "gcp"] = "gcp"
     experimental_remove_silence: bool = False
+    language: Optional[str] = "english"
 
 
 class CoquiTTSSynthesizerConfig(

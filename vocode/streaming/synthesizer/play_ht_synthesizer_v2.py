@@ -6,7 +6,7 @@ from typing import AsyncGenerator, AsyncIterator, Optional
 import numpy as np
 from loguru import logger
 from pyht import AsyncClient
-from pyht.client import CongestionCtrl, TTSOptions
+from pyht.client import CongestionCtrl, TTSOptions, Language
 from pyht.protos import api_pb2
 
 from vocode.streaming.models.audio import AudioEncoding
@@ -66,6 +66,7 @@ class PlayHtSynthesizerV2(VocodePlayHtSynthesizer):
             voice_guidance=self.synthesizer_config.voice_guidance,
             temperature=self.synthesizer_config.temperature,
             top_p=self.synthesizer_config.top_p,
+            language=Language.ENGLISH,
         )
         if self.synthesizer_config.quality:
             self.playht_options.quality = self.synthesizer_config.quality
@@ -239,6 +240,7 @@ class PlayHtSynthesizerV2(VocodePlayHtSynthesizer):
                 self.playht_client.tts(
                     text,
                     self.playht_options,
+                    voice_engine="Play3.0-mini-http",
                 )
                 for text in split_text(
                     string_to_split=message.text,
