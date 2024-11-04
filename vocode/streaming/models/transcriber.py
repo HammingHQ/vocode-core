@@ -38,7 +38,7 @@ class EndpointingType(str, Enum):
 
 
 class EndpointingConfig(TypedModel, type=EndpointingType.BASE):  # type: ignore
-    simulate_interrupt: bool = False
+    simulate_interrupt: Optional[bool] = False
 
 
 class TimeEndpointingConfig(EndpointingConfig, type=EndpointingType.TIME_BASED):  # type: ignore
