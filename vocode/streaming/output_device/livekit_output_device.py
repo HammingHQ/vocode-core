@@ -1,4 +1,6 @@
 import asyncio
+from typing import Optional
+import logging
 
 from livekit import rtc
 
@@ -6,6 +8,7 @@ from vocode.streaming.livekit.constants import AUDIO_ENCODING, DEFAULT_SAMPLING_
 from vocode.streaming.models.audio import AudioEncoding
 from vocode.streaming.output_device.abstract_output_device import AbstractOutputDevice
 from vocode.streaming.output_device.audio_chunk import ChunkState
+from vocode.streaming.livekit.audio_recorder import AudioRecorder
 
 NUM_CHANNELS = 1
 
@@ -14,6 +17,7 @@ class LiveKitOutputDevice(AbstractOutputDevice):
     source: rtc.AudioSource
     track: rtc.LocalAudioTrack
     room: rtc.Room
+    audio_recorder: Optional[AudioRecorder] = None
 
     def __init__(
         self,
@@ -38,11 +42,22 @@ class LiveKitOutputDevice(AbstractOutputDevice):
                 continue
 
             await self.play(audio_chunk.data)
-            audio_chunk.on_play()
+            if hasattr(audio_chunk, "on_play"):
+                try:
+                    audio_chunk.on_play()
+                except Exception as e:
+                    logging.error(f"Error calling on_play: {e}")
             audio_chunk.state = ChunkState.PLAYED
             self.interruptible_event.is_interruptible = False
 
-    async def initialize_source(self, room: rtc.Room):
+            if self.audio_recorder:
+                self.audio_recorder.record(0, audio_chunk.data)
+
+    async def initialize_source(
+        self,
+        room: rtc.Room,
+        audio_recorder: Optional[AudioRecorder] = None,
+    ):
         """Creates the AudioSource that will be used to capture audio frames.
 
         Can only be called once the room has set up its track callbcks
@@ -55,6 +70,7 @@ class LiveKitOutputDevice(AbstractOutputDevice):
         await self.room.local_participant.publish_track(track, options)
         self.track = track
         self.source = source
+        self.audio_recorder = audio_recorder
 
     async def uninitialize_source(self):
         await self.room.local_participant.unpublish_track(self.track.sid)
