@@ -60,7 +60,7 @@ class LiveKitClientConversation(StreamingConversation[LiveKitOutputDevice]):
                 frame = event.frame
                 self.receive_audio(bytes(frame.data))
                 if self.audio_recorder:
-                    self.audio_recorder.record(1, bytes(frame.data))
+                    self.audio_recorder.record(0, bytes(frame.data))
 
     def _on_track_unsubscribed(
         self,

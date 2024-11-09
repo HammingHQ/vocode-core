@@ -51,7 +51,7 @@ class LiveKitOutputDevice(AbstractOutputDevice):
             self.interruptible_event.is_interruptible = False
 
             if self.audio_recorder:
-                self.audio_recorder.record(0, audio_chunk.data)
+                self.audio_recorder.record(1, audio_chunk.data)
 
     async def initialize_source(
         self,
