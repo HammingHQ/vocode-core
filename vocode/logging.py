@@ -99,13 +99,18 @@ class InterceptHandler(logging.Handler):
 
         # Find caller from where originated the logged message
         frame, depth = logging.currentframe(), 2
-        while (
-            frame.f_code.co_filename == logging.__file__
-            or frame.f_code.co_filename == __file__
-            or "sentry_sdk/integrations" in frame.f_code.co_filename
-        ):
-            frame = frame.f_back  # type: ignore
-            depth += 1
+
+        # Skip livekit because this error: ValueError: call stack is not deep enough
+        # Exception ignored on calling ctypes callback function: <function ffi_event_callback at 0x106e12660>
+        # This is calling a C callback function from livekit
+        if record.name != "livekit":
+            while (
+                frame.f_code.co_filename == logging.__file__
+                or frame.f_code.co_filename == __file__
+                or "sentry_sdk/integrations" in frame.f_code.co_filename
+            ):
+                frame = frame.f_back  # type: ignore
+                depth += 1
         logger.opt(depth=depth, exception=record.exc_info).log(
             level,
             record.getMessage(),
