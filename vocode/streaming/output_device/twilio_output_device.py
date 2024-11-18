@@ -111,7 +111,7 @@ class TwilioOutputDevice(AbstractOutputDevice):
         await self.is_stopped.wait()
         logger.debug(f"TwilioOutputDevice: draining queues...")
         self._drain_audio_chunk_queue(self._input_queue)
-        self._drain_queue(self._unprocessed_audio_chunks_queue)
+        self._drain_audio_chunk_queue(self._unprocessed_audio_chunks_queue)
         self._drain_queue(self._mark_message_queue)
         self._drain_queue(self._twilio_events_queue)
         self._drain_queue(self._audio_queue)
