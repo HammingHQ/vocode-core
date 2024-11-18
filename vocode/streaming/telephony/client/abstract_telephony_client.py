@@ -27,3 +27,12 @@ class AbstractTelephonyClient(ABC):
     @abstractmethod
     async def end_call(self, id) -> bool:
         raise NotImplementedError
+
+    @abstractmethod
+    async def send_call_dtmf(
+        self, 
+        twilio_sid: str,
+        conversation_id: str,
+        digits: str,
+    ):
+        pass

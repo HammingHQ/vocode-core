@@ -20,8 +20,8 @@ from typing import (
     Union,
 )
 
-from fuzzywuzzy import fuzz
 import sentry_sdk
+from fuzzywuzzy import fuzz
 from loguru import logger
 from sentry_sdk.tracing import Span
 
@@ -42,8 +42,6 @@ from vocode.streaming.constants import (
     CHECK_HUMAN_PRESENT_MESSAGE_CHOICES,
     TEXT_TO_SPEECH_CHUNK_SIZE_SECONDS,
 )
-from vocode.streaming.telephony.constants import DEFAULT_HOLD_MESSAGE_DELAY, DEFAULT_HOLD_DURATION
-
 from vocode.streaming.models.actions import EndOfTurn
 from vocode.streaming.models.agent import FillerAudioConfig
 from vocode.streaming.models.events import Sender
@@ -51,9 +49,9 @@ from vocode.streaming.models.message import BaseMessage, BotBackchannel, LLMToke
 from vocode.streaming.models.telephony import (
     IvrConfig,
     IvrDagConfig,
+    IvrHoldNode,
     IvrLinkType,
     IvrMessageNode,
-    IvrHoldNode,
 )
 from vocode.streaming.models.transcriber import TranscriberConfig, Transcription
 from vocode.streaming.models.transcript import Message, Transcript, TranscriptCompleteEvent
@@ -65,6 +63,7 @@ from vocode.streaming.synthesizer.base_synthesizer import (
     SynthesisResult,
 )
 from vocode.streaming.synthesizer.input_streaming_synthesizer import InputStreamingSynthesizer
+from vocode.streaming.telephony.constants import DEFAULT_HOLD_DURATION, DEFAULT_HOLD_MESSAGE_DELAY
 from vocode.streaming.transcriber.base_transcriber import BaseTranscriber
 from vocode.streaming.transcriber.deepgram_transcriber import DeepgramTranscriber
 from vocode.streaming.utils import (
@@ -1026,6 +1025,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         self.initial_message_tracker.set()
 
     async def receive_dtmf(self, digit: str):
+        logger.debug(f"Received DTMF digit: {digit}")
         if self.ivr_worker:
             await self.ivr_worker.receive_dtmf(digit)
 

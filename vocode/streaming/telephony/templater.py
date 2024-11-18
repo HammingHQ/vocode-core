@@ -17,12 +17,30 @@ def get_connection_twiml(
     call_id: str,
     base_url: str,
     template_environment: Environment = DEFAULT_TEMPLATE_ENVIRONMENT,
-):
+) -> Response:
     return Response(
         render_template(
             template_name="twilio_connect_call.xml",
             template_environment=template_environment,
             base_url=base_url,
+            id=call_id,
+        ),
+        media_type="application/xml",
+    )
+
+
+def get_dtmf_twiml(
+    call_id: str,
+    digits: str,
+    base_url: str,
+    template_environment: Environment = DEFAULT_TEMPLATE_ENVIRONMENT,
+) -> Response:
+    return Response(
+        render_template(
+            template_name="twilio_send_dtmf.xml",
+            template_environment=template_environment,
+            base_url=base_url,
+            digits=digits,
             id=call_id,
         ),
         media_type="application/xml",

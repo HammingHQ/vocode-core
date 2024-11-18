@@ -9,7 +9,7 @@ from vocode.streaming.agent.abstract_factory import AbstractAgentFactory
 from vocode.streaming.models.agent import AgentConfig
 from vocode.streaming.models.events import PhoneCallEndedEvent
 from vocode.streaming.models.synthesizer import SynthesizerConfig
-from vocode.streaming.models.telephony import PhoneCallDirection, IvrConfig, IvrDagConfig
+from vocode.streaming.models.telephony import IvrConfig, IvrDagConfig, PhoneCallDirection
 from vocode.streaming.models.transcriber import TranscriberConfig
 from vocode.streaming.output_device.twilio_output_device import TwilioOutputDevice
 from vocode.streaming.output_device.vonage_output_device import VonageOutputDevice
@@ -78,7 +78,7 @@ class AbstractPhoneConversation(StreamingConversation[TelephonyOutputDeviceType]
         logger.debug("Attached WS to outbound call")
 
     @abstractmethod
-    async def attach_ws_and_start(self, ws: WebSocket):
+    async def attach_ws_and_start(self, ws: WebSocket, is_resuming: bool = False):
         pass
 
     async def terminate(self):

@@ -87,6 +87,14 @@ class VonageClient(AbstractTelephonyClient):
             if not response.ok:
                 raise RuntimeError(f"Failed to update call: {response.status} {response.reason}")
             return True
+        
+    async def send_call_dtmf(
+        self, 
+        id: str,
+        conversation_id: str,
+        digits: str,
+    ):
+        raise NotImplementedError
 
     def create_call_ncco(
         self,

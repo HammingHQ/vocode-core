@@ -86,7 +86,7 @@ class VonagePhoneConversation(AbstractPhoneConversation[VonageOutputDevice]):
     def create_state_manager(self) -> VonagePhoneConversationStateManager:
         return VonagePhoneConversationStateManager(self)
 
-    async def attach_ws_and_start(self, ws: WebSocket):
+    async def attach_ws_and_start(self, ws: WebSocket, is_resuming: bool = False):
         # start message
         await ws.receive()
         super().attach_ws(ws)

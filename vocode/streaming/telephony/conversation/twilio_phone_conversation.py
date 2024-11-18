@@ -2,7 +2,7 @@ import base64
 import json
 import os
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import WebSocket
 from loguru import logger
@@ -11,7 +11,12 @@ from vocode.streaming.agent.abstract_factory import AbstractAgentFactory
 from vocode.streaming.models.agent import AgentConfig
 from vocode.streaming.models.events import PhoneCallConnectedEvent
 from vocode.streaming.models.synthesizer import SynthesizerConfig
-from vocode.streaming.models.telephony import PhoneCallDirection, TwilioConfig, IvrConfig, IvrDagConfig
+from vocode.streaming.models.telephony import (
+    IvrConfig,
+    IvrDagConfig,
+    PhoneCallDirection,
+    TwilioConfig,
+)
 from vocode.streaming.models.transcriber import TranscriberConfig
 from vocode.streaming.output_device.twilio_output_device import (
     ChunkFinishedMarkMessage,
@@ -24,6 +29,7 @@ from vocode.streaming.telephony.conversation.abstract_phone_conversation import 
     AbstractPhoneConversation,
 )
 from vocode.streaming.transcriber.abstract_factory import AbstractTranscriberFactory
+from vocode.streaming.utils.dtmf_utils import KeypadEntry
 from vocode.streaming.utils.events_manager import EventsManager
 from vocode.streaming.utils.state_manager import TwilioPhoneConversationStateManager
 
@@ -87,29 +93,48 @@ class TwilioPhoneConversation(AbstractPhoneConversation[TwilioOutputDevice]):
         )
         self.twilio_sid = twilio_sid
         self.record_call = record_call
+        self.pending_restart = False
 
     def create_state_manager(self) -> TwilioPhoneConversationStateManager:
         return TwilioPhoneConversationStateManager(self)
 
-    async def attach_ws_and_start(self, ws: WebSocket):
-        super().attach_ws(ws)
-
-        await self._wait_for_twilio_start(ws)
-        await self.start()
-        self.events_manager.publish_event(
-            PhoneCallConnectedEvent(
-                conversation_id=self.id,
-                to_phone_number=self.to_phone,
-                from_phone_number=self.from_phone,
-            )
+    async def send_dtmf(self, keypad_entries: List[KeypadEntry]):
+        self.pending_restart = True
+        digits = "".join(keypad_entry.value for keypad_entry in keypad_entries)
+        await self.telephony_client.send_call_dtmf(
+            twilio_sid=self.twilio_sid, conversation_id=self.id, digits=digits
         )
+
+    async def attach_ws_and_start(self, ws: WebSocket, is_resuming: bool = False):
+        if is_resuming:
+            # NOTE: we need to stop the output device to clear the buffer
+            # before switching to the new Websocket
+            await self.output_device.stop()
+        super().attach_ws(ws)
+        await self._wait_for_twilio_start(ws)
+
+        if is_resuming:
+            self.output_device.start()
+        else:
+            await self.start()
+            self.events_manager.publish_event(
+                PhoneCallConnectedEvent(
+                    conversation_id=self.id,
+                    to_phone_number=self.to_phone,
+                    from_phone_number=self.from_phone,
+                )
+            )
+
         while self.is_active():
             message = await ws.receive_text()
             response = await self._handle_ws_message(message)
             if response == TwilioPhoneConversationWebsocketAction.CLOSE_WEBSOCKET:
                 break
         await ws.close(code=1000, reason=None)
-        await self.terminate()
+        if self.pending_restart:
+            self.pending_restart = False
+        else:
+            await self.terminate()
 
     async def _wait_for_twilio_start(self, ws: WebSocket):
         assert isinstance(self.output_device, TwilioOutputDevice)
