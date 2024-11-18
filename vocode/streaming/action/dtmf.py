@@ -95,7 +95,7 @@ class TwilioDTMF(
                     success=False, message="Invalid DTMF buttons, can only accept 0-9"
                 ),
             )
-        self.conversation_state_manager._twilio_phone_conversation.output_device.send_dtmf_tones(
+        await self.conversation_state_manager._twilio_phone_conversation.send_dtmf(
             keypad_entries=keypad_entries
         )
         return ActionOutput(

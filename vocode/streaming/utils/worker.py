@@ -53,6 +53,7 @@ class AsyncWorker(AbstractWorker[WorkerInputType]):
         self._input_queue: asyncio.Queue[WorkerInputType] = asyncio.Queue()
 
     def start(self) -> asyncio.Task:
+        logger.debug(f"AsyncWorker: starting {self.__class__.__name__}")
         self.worker_task = asyncio_create_task(
             self._run_loop(),
         )
@@ -67,6 +68,7 @@ class AsyncWorker(AbstractWorker[WorkerInputType]):
         raise NotImplementedError
 
     async def terminate(self):
+        logger.debug(f"AsyncWorker: terminating {self.__class__.__name__}")
         if self.worker_task:
             return self.worker_task.cancel()
 

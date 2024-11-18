@@ -6,7 +6,7 @@ from loguru import logger
 
 from vocode.streaming.models.telephony import TwilioConfig
 from vocode.streaming.telephony.client.abstract_telephony_client import AbstractTelephonyClient
-from vocode.streaming.telephony.templater import get_connection_twiml
+from vocode.streaming.telephony.templater import get_connection_twiml, get_dtmf_twiml
 from vocode.streaming.utils.async_requester import AsyncRequestor
 
 
@@ -79,7 +79,10 @@ class TwilioClient(AbstractTelephonyClient):
     def get_connection_twiml(self, conversation_id: str):
         return get_connection_twiml(call_id=conversation_id, base_url=self.base_url)
 
-    async def end_call(self, twilio_sid):
+    def get_dtmf_twiml(self, conversation_id: str, digits: str):
+        return get_dtmf_twiml(call_id=conversation_id, digits=digits, base_url=self.base_url)
+
+    async def end_call(self, twilio_sid: str):
         async with AsyncRequestor().get_session().post(
             f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_config.account_sid}/Calls/{twilio_sid}.json",
             auth=self.auth,
@@ -89,3 +92,17 @@ class TwilioClient(AbstractTelephonyClient):
                 raise RuntimeError(f"Failed to end call: {response.status} {response.reason}")
             response = await response.json()
             return response["status"] == "completed"
+
+    async def send_call_dtmf(self, twilio_sid: str, conversation_id: str, digits: str):
+        data = {
+            "Twiml": self.get_dtmf_twiml(conversation_id=conversation_id, digits=digits).body.decode("utf-8"),
+            "Record": True,
+            "RecordingChannels": "dual",
+        }
+        async with AsyncRequestor().get_session().post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_config.account_sid}/Calls/{twilio_sid}.json",
+            auth=self.auth,
+            data=data,
+        ) as response:
+            if not response.ok:
+                raise RuntimeError(f"Failed to send DTMF: {response.status} {response.reason}")

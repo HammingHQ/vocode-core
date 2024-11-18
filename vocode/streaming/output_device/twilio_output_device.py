@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import audioop
 import base64
-import json
-from typing import List, Optional, Union
-import os
 import io
+import json
+import os
 import time
 from dataclasses import dataclass
+from typing import List, Optional, Union
 
 from fastapi import WebSocket
 from fastapi.websockets import WebSocketState
@@ -16,14 +16,13 @@ from loguru import logger
 from pydantic import BaseModel
 from pydub import AudioSegment
 
+from vocode.streaming.constants import BackgroundNoiseType
 from vocode.streaming.output_device.abstract_output_device import AbstractOutputDevice
 from vocode.streaming.output_device.audio_chunk import AudioChunk, ChunkState
 from vocode.streaming.telephony.constants import DEFAULT_AUDIO_ENCODING, DEFAULT_SAMPLING_RATE
-from vocode.streaming.constants import BackgroundNoiseType
 from vocode.streaming.utils.create_task import asyncio_create_task
 from vocode.streaming.utils.dtmf_utils import DTMFToneGenerator, KeypadEntry
 from vocode.streaming.utils.worker import InterruptibleEvent
-
 
 BACKGROUND_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "background_audio")
 
@@ -52,12 +51,11 @@ class TwilioOutputDevice(AbstractOutputDevice):
         stream_sid: Optional[str] = None,
         background_noise: Optional[BackgroundNoiseType] = None,
     ):
-        super().__init__(
-            sampling_rate=DEFAULT_SAMPLING_RATE, audio_encoding=DEFAULT_AUDIO_ENCODING
-        )
+        super().__init__(sampling_rate=DEFAULT_SAMPLING_RATE, audio_encoding=DEFAULT_AUDIO_ENCODING)
+        self.is_stopping = asyncio.Event()
+        self.is_stopped = asyncio.Event()
         self.ws = ws
         self.stream_sid = stream_sid
-        self.active = True
         self.background_noise = background_noise
 
         self._twilio_events_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -67,8 +65,63 @@ class TwilioOutputDevice(AbstractOutputDevice):
         )
         self._audio_queue: asyncio.Queue[AudioItem] = asyncio.Queue()
 
+    def start(self):
+        logger.debug(f"TwilioOutputDevice: starting with stream_sid={self.stream_sid}")
+        queues: dict[str, asyncio.Queue] = {
+            "twilio_events_queue": self._twilio_events_queue,
+            "mark_message_queue": self._mark_message_queue,
+            "unprocessed_audio_chunks_queue": self._unprocessed_audio_chunks_queue,
+            "audio_queue": self._audio_queue,
+        }
+
+        for queue_name, queue in queues.items():
+            if queue.qsize() > 0:
+                logger.warning(
+                    f"TwilioOutputDevice: starting with {queue.qsize()} items in the {queue_name} queue"
+                )
+        self.is_stopping.clear()
+        self.is_stopped.clear()
+        super().start()
+
+    def _interrupt_audio_chunk(self, item: InterruptibleEvent[AudioChunk]):
+        audio_chunk = item.payload
+        audio_chunk.on_interrupt()
+        audio_chunk.state = ChunkState.INTERRUPTED
+
+    def _drain_audio_chunk_queue(self, queue: asyncio.Queue[InterruptibleEvent[AudioChunk]]):
+        while True:
+            try:
+                item = queue.get_nowait()
+                self._interrupt_audio_chunk(item)
+            except asyncio.QueueEmpty:
+                break
+
+    def _drain_queue(self, queue: asyncio.Queue):
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+    async def stop(self):
+        logger.debug(f"TwilioOutputDevice: stopping...")
+        self.is_stopping.set()
+        await super().terminate()
+        logger.debug(f"TwilioOutputDevice: waiting worker task to finish...")
+        await self.is_stopped.wait()
+        logger.debug(f"TwilioOutputDevice: draining queues...")
+        self._drain_audio_chunk_queue(self._input_queue)
+        self._drain_queue(self._unprocessed_audio_chunks_queue)
+        self._drain_queue(self._mark_message_queue)
+        self._drain_queue(self._twilio_events_queue)
+        self._drain_queue(self._audio_queue)
+        logger.debug(f"TwilioOutputDevice: stopped.")
+
+    def _can_enqueue(self) -> bool:
+        return not self.is_stopping.is_set() and not self.is_stopped.is_set()
+
     def consume_nonblocking(self, item: InterruptibleEvent[AudioChunk]):
-        if not item.is_interrupted():
+        if self._can_enqueue() and not item.is_interrupted():
             if self.background_noise:
                 self._audio_queue.put_nowait(
                     AudioItem(chunk=item.payload.data, chunk_id=str(item.payload.chunk_id))
@@ -79,15 +132,14 @@ class TwilioOutputDevice(AbstractOutputDevice):
                 )
             self._unprocessed_audio_chunks_queue.put_nowait(item)
         else:
-            audio_chunk = item.payload
-            audio_chunk.on_interrupt()
-            audio_chunk.state = ChunkState.INTERRUPTED
+            self._interrupt_audio_chunk(item)
 
     def interrupt(self):
         self._send_clear_message()
 
     def enqueue_mark_message(self, mark_message: MarkMessage):
-        self._mark_message_queue.put_nowait(mark_message)
+        if self._can_enqueue():
+            self._mark_message_queue.put_nowait(mark_message)
 
     def send_dtmf_tones(self, keypad_entries: List[KeypadEntry]):
         tone_generator = DTMFToneGenerator()
@@ -111,7 +163,11 @@ class TwilioOutputDevice(AbstractOutputDevice):
                 return
             if self.ws.application_state == WebSocketState.DISCONNECTED:
                 break
-            await self.ws.send_text(twilio_event)
+            try:
+                await self.ws.send_text(twilio_event)
+            except Exception as e:
+                logger.error(f"TwilioOutputDevice: error sending twilio event: {e}")
+                break
 
     async def _process_mark_messages(self):
         while True:
@@ -143,20 +199,23 @@ class TwilioOutputDevice(AbstractOutputDevice):
             self.interruptible_event.is_interruptible = False
 
     async def _run_loop(self):
-        send_twilio_messages_task = asyncio_create_task(self._send_twilio_messages())
-        process_mark_messages_task = asyncio_create_task(self._process_mark_messages())
+        try:
+            send_twilio_messages_task = asyncio_create_task(self._send_twilio_messages())
+            process_mark_messages_task = asyncio_create_task(self._process_mark_messages())
 
-        if self.background_noise:
-            logger.info(f"Setting background noise task for {self.background_noise}")
-            send_background_noise_task = asyncio_create_task(self._send_background_noise())
-            await asyncio.gather(
-                send_twilio_messages_task, process_mark_messages_task, send_background_noise_task
-            )
-        else:
-            logger.info("No background noise task")
-            await asyncio.gather(
-                send_twilio_messages_task, process_mark_messages_task
-            )
+            if self.background_noise:
+                logger.info(f"Setting background noise task for {self.background_noise}")
+                send_background_noise_task = asyncio_create_task(self._send_background_noise())
+                await asyncio.gather(
+                    send_twilio_messages_task,
+                    process_mark_messages_task,
+                    send_background_noise_task,
+                )
+            else:
+                logger.info("No background noise task")
+                await asyncio.gather(send_twilio_messages_task, process_mark_messages_task)
+        finally:
+            self.is_stopped.set()
 
     def _send_audio_chunk_and_mark(self, chunk: bytes, chunk_id: str):
         media_message = {

@@ -43,6 +43,7 @@ class CallsRouter(BaseRouter):
         self.agent_factory = agent_factory
         self.synthesizer_factory = synthesizer_factory
         self.events_manager = events_manager
+        self.conversation_by_id: dict[str, AbstractPhoneConversation] = {}
         self.router = APIRouter()
         self.router.websocket("/connect_call/{id}")(self.connect_call)
 
@@ -108,18 +109,25 @@ class CallsRouter(BaseRouter):
             if not call_config:
                 raise HTTPException(status_code=400, detail="No active phone call")
 
-            phone_conversation = self._from_call_config(
-                base_url=self.base_url,
-                call_config=call_config,
-                config_manager=self.config_manager,
-                conversation_id=id,
-                transcriber_factory=self.transcriber_factory,
-                agent_factory=self.agent_factory,
-                synthesizer_factory=self.synthesizer_factory,
-                events_manager=self.events_manager,
-            )
+            is_resuming = False
+            if id in self.conversation_by_id:
+                logger.debug("Resuming phone conversation: {}".format(id))
+                phone_conversation = self.conversation_by_id[id]
+                is_resuming = True
+            else:
+                phone_conversation = self._from_call_config(
+                    base_url=self.base_url,
+                    call_config=call_config,
+                    config_manager=self.config_manager,
+                    conversation_id=id,
+                    transcriber_factory=self.transcriber_factory,
+                    agent_factory=self.agent_factory,
+                    synthesizer_factory=self.synthesizer_factory,
+                    events_manager=self.events_manager,
+                )
+                self.conversation_by_id[id] = phone_conversation
 
-            await phone_conversation.attach_ws_and_start(websocket)
+            await phone_conversation.attach_ws_and_start(websocket, is_resuming)
             logger.debug("Phone WS connection closed for chat {}".format(id))
 
     def get_router(self) -> APIRouter:
