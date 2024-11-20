@@ -63,13 +63,6 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
         await self.process()
 
     def send_audio(self, chunk):
-        if self.transcriber_config.audio_encoding == AudioEncoding.MULAW:
-            sample_width = 1
-            if isinstance(chunk, np.ndarray):
-                chunk = chunk.astype(np.int16)
-                chunk = chunk.tobytes()
-            chunk = audioop.ulaw2lin(chunk, sample_width)
-
         self.buffer.extend(chunk)
 
         if (
@@ -84,6 +77,8 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
 
     def get_assembly_ai_url(self):
         url_params = {"sample_rate": self.transcriber_config.sampling_rate}
+        if self.transcriber_config.audio_encoding == AudioEncoding.MULAW:
+            url_params.update({"encoding": "pcm_mulaw"})
         if self.transcriber_config.word_boost:
             url_params.update({"word_boost": json.dumps(self.transcriber_config.word_boost)})
         return ASSEMBLY_AI_URL + f"?{urlencode(url_params)}"
@@ -91,6 +86,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
     async def process(self):
         self.audio_cursor = 0
         URL = self.get_assembly_ai_url()
+        logger.info(f"Connecting to AssemblyAI at {URL}")
 
         async with websockets.connect(
             URL,
@@ -99,6 +95,7 @@ class AssemblyAITranscriber(BaseAsyncTranscriber[AssemblyAITranscriberConfig]):
             ping_timeout=20,
         ) as ws:
             await asyncio.sleep(0.1)
+            logger.info("Connected to AssemblyAI")
 
             if self.end_utterance_silence_threshold_msg:
                 await ws.send(self.end_utterance_silence_threshold_msg)
