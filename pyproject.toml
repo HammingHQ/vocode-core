@@ -121,8 +121,10 @@ explicit_package_bases = true
 
 
 [tool.pytest.ini_options]
-addopts = "--basetemp=/tmp/pytest"
+asyncio_mode = "strict"
 testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v"
 
 [tool.pytest_env]
 ENVIRONMENT = "test"
