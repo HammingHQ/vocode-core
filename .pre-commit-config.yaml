@@ -1,9 +1,9 @@
 default_language_version:
-  python: python3.10
+  python: python3.11
 
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.6.0
+  rev: v5.0.0
   hooks:
   - id: check-ast
   - id: trailing-whitespace
@@ -18,7 +18,7 @@ repos:
     - --fix=lf
 
 - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-  rev: v2.13.0
+  rev: v2.14.0
   hooks:
   - id: pretty-format-yaml
     args:
@@ -34,7 +34,7 @@ repos:
     - --settings-path=./pyproject.toml
 
 - repo: https://github.com/psf/black-pre-commit-mirror
-  rev: 24.4.2
+  rev: 24.10.0
   hooks:
   - id: black
     args:

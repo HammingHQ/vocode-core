@@ -9,5 +9,8 @@ credentials.json
 **/call_transcripts/*.txt
 benchmark_results/
 private.key
+pubkey.pem
 dump.rdb
 .idea
+.cursorrules
+.vscode/settings.json
