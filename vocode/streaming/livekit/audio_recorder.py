@@ -1,14 +1,15 @@
-from typing import Optional, Dict, List
-import wave
-import time
-import tempfile
 import shutil
+import tempfile
+import time
+import wave
+from typing import Dict, List, Optional
 
 from loguru import logger
 
+from vocode.streaming.livekit.constants import DEFAULT_SAMPLING_RATE
+
 NUM_CHANNELS = 1
 SAMPLE_WIDTH = 2
-FRAME_RATE = 44100
 DELTA_THRESHOLD_MS = 10
 
 
@@ -30,7 +31,7 @@ class AudioTrack:
             raise Exception(f"Failed to open wave file {self.wave_file_name}")
         self.wave_file.setnchannels(NUM_CHANNELS)
         self.wave_file.setsampwidth(SAMPLE_WIDTH)
-        self.wave_file.setframerate(FRAME_RATE)
+        self.wave_file.setframerate(DEFAULT_SAMPLING_RATE)
 
         logger.info(f"Started recording track {self.track_id} to {self.wave_file_name}")
 
@@ -42,11 +43,11 @@ class AudioTrack:
     def record(self, frame: bytes, frame_time: float):
         delta_ms = frame_time - self.last_frame_time
         if delta_ms > DELTA_THRESHOLD_MS:
-            silence = b"\x00\x00" * int((delta_ms / 1000) * FRAME_RATE)
+            silence = b"\x00" * SAMPLE_WIDTH * int((DEFAULT_SAMPLING_RATE * delta_ms / 1000))
             self.wave_file.writeframes(silence)
 
         self.wave_file.writeframes(frame)
-        frame_duration_ms = (len(frame) / SAMPLE_WIDTH) / FRAME_RATE * 1000
+        frame_duration_ms = (len(frame) / SAMPLE_WIDTH) / DEFAULT_SAMPLING_RATE * 1000
         self.last_frame_time = frame_time + frame_duration_ms
 
     def _generate_wave_file_name(self, base_folder: str):

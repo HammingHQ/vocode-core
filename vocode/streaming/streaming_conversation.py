@@ -1,34 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import audioop
+import io
+import os
 import queue
 import random
 import re
 import threading
 import time
 import typing
-from typing import (
-    Any,
-    Awaitable,
-    Callable,
-    Generic,
-    Iterator,
-    List,
-    Optional,
-    Tuple,
-    TypeVar,
-    Union,
-)
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Literal, Optional, Tuple, Union
 
 import sentry_sdk
 from fuzzywuzzy import fuzz
 from loguru import logger
+from pydub import AudioSegment
 from sentry_sdk.tracing import Span
 
 from vocode import conversation_id as ctx_conversation_id
 from vocode.streaming.action.worker import ActionsWorker
 from vocode.streaming.agent.base_agent import (
-    AgentInput,
     AgentResponse,
     AgentResponseFillerAudio,
     AgentResponseMessage,
@@ -52,6 +44,7 @@ from vocode.streaming.models.telephony import (
     IvrHoldNode,
     IvrLinkType,
     IvrMessageNode,
+    IvrPlayNode,
 )
 from vocode.streaming.models.transcriber import TranscriberConfig, Transcription
 from vocode.streaming.models.transcript import Message, Transcript, TranscriptCompleteEvent
@@ -80,7 +73,6 @@ from vocode.streaming.utils.worker import (
     AbstractWorker,
     AsyncQueueWorker,
     InterruptibleAgentResponseEvent,
-    InterruptibleAgentResponseWorker,
     InterruptibleEvent,
     InterruptibleEventFactory,
     InterruptibleWorker,
@@ -118,6 +110,10 @@ BACKCHANNEL_PATTERNS = [
 LOW_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD = 3
 LOWEST_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD = 50
 
+AUDIO_FILES_PATH = os.path.join(os.path.dirname(__file__), "audio_files")
+AUDIO_FRAME_RATE = 8000
+AUDIO_SAMPLE_WIDTH = 1
+AUDIO_CHANNELS = 1
 
 class StreamingConversation(AudioPipeline[OutputDeviceType]):
     class QueueingInterruptibleEventFactory(InterruptibleEventFactory):
@@ -671,7 +667,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             while True:
                 try:
                     current_node = self.dag.nodes[self._current_node_id]
-                    logger.debug(f"IvrWorker current node: {current_node}")
+                    logger.debug(f"IvrWorker current node: {current_node}, type: {type(current_node)}")
 
                     if current_node.wait_delay:
                         await asyncio.sleep(current_node.wait_delay)
@@ -680,7 +676,18 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         logger.debug("IvrWorker is finished")
                         break
 
-                    if isinstance(current_node, IvrMessageNode):
+                    if isinstance(current_node, IvrPlayNode):
+                        await self.conversation.play_audio(current_node.sound)
+                        if current_node.links:
+                            if len(current_node.links) > 1:
+                                logger.error(
+                                    "IVR DAG has multiple links for play node, using the first one"
+                                )
+                            self._current_node_id = current_node.links[0].next
+                        if current_node.delay:
+                            await asyncio.sleep(current_node.delay)
+
+                    elif isinstance(current_node, IvrMessageNode):
                         loop_task = asyncio_create_task(self._loop_message(current_node.message))
                         
                         available_commands = [link.message for link in current_node.links]
@@ -766,7 +773,6 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         logger.debug(f"IVR received DTMF command: {command}")
                         await self._set_dtmf_queue(None)
                         return command
-        
 
         async def process(self, item: InterruptibleEvent[TranscriptionAgentInput]):
             transcription = item.payload.transcription
@@ -900,6 +906,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         return ConversationStateManager(conversation=self)
 
     async def start(self, mark_ready: Optional[Callable[[], Awaitable[None]]] = None):
+        self._audio_segments = self._load_audio_segments()
         self.transcriber.start()
         self.transcriber.streaming_conversation = self
         self.transcriptions_worker.start()
@@ -1053,6 +1060,36 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 check_human_present_count += 1
             # wait till the idle time would have passed the threshold if no action occurs
             await asyncio.sleep(ALLOWED_IDLE_TIME)
+
+    def _load_audio_segments(self) -> Dict[str, bytes]:
+        audio_segments = {}
+        for sound in ["beep", "ring"]:
+            try:
+                audio_segment = AudioSegment.from_file(os.path.join(AUDIO_FILES_PATH, f"{sound}.wav"))
+                audio_segment = audio_segment.set_channels(AUDIO_CHANNELS)
+                audio_segment = audio_segment.set_frame_rate(AUDIO_FRAME_RATE)
+                audio_segment = audio_segment.set_sample_width(AUDIO_SAMPLE_WIDTH)
+                buffer = io.BytesIO()
+                audio_segment.export(buffer, format="raw")
+                audio_data = audioop.lin2ulaw(buffer.getvalue(), 1)
+                audio_segments[sound] = audio_data
+            except Exception as e:
+                logger.error(f"Error loading audio segment for {sound}: {e}")
+        logger.info(f"Loaded audio segments: {audio_segments.keys()}")
+        return audio_segments
+
+    async def play_audio(self, sound: Literal["beep", "ring"]):
+        audio_data = self._audio_segments[sound]
+        chunk_size = AUDIO_FRAME_RATE // 10
+        for i in range(0, len(audio_data), chunk_size):
+            chunk = AudioChunk(data=audio_data[i:i + chunk_size])
+            self.output_device.consume_nonblocking(
+                InterruptibleEvent(
+                    payload=chunk,
+                    is_interruptible=False,
+                ),
+            )
+        await asyncio.sleep(len(audio_data) / AUDIO_FRAME_RATE)
 
     async def send_single_message(
         self,

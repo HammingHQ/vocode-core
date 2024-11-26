@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, Literal, Optional, Union, List
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from vocode.streaming.models.agent import AgentConfig
 from vocode.streaming.models.model import BaseModel, TypedModel
@@ -12,13 +12,13 @@ from vocode.streaming.models.transcriber import (
 from vocode.streaming.telephony.constants import (
     DEFAULT_AUDIO_ENCODING,
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_HOLD_DURATION,
+    DEFAULT_HOLD_MESSAGE_DELAY,
+    DEFAULT_IVR_HANDOFF_DELAY,
     DEFAULT_SAMPLING_RATE,
     VONAGE_AUDIO_ENCODING,
     VONAGE_CHUNK_SIZE,
     VONAGE_SAMPLING_RATE,
-    DEFAULT_HOLD_MESSAGE_DELAY,
-    DEFAULT_HOLD_DURATION,
-    DEFAULT_IVR_HANDOFF_DELAY,
 )
 
 
@@ -116,6 +116,7 @@ class IvrNodeType(str, Enum):
     MESSAGE = "ivr_node_message"
     HANDOFF = "ivr_node_handoff"
     HOLD = "ivr_node_hold"
+    PLAY = "ivr_node_play"
     END = "ivr_node_end"
 
 class IvrLinkType(str, Enum):
@@ -139,11 +140,14 @@ class IvrHoldNode(IvrBaseNode, type=IvrNodeType.HOLD.value):  # type: ignore
     delay: float
     duration: float
 
+class IvrPlayNode(IvrBaseNode, type=IvrNodeType.PLAY.value):  # type: ignore
+    sound: Literal["beep", "ring"]
+    delay: float
+
 class IvrEndNode(IvrBaseNode, type=IvrNodeType.END.value):  # type: ignore
     is_final: bool = True
 
-
-IvrNode = Union[IvrMessageNode, IvrHoldNode, IvrEndNode]
+IvrNode = Union[IvrMessageNode, IvrHoldNode, IvrPlayNode, IvrEndNode]
 
 
 class IvrDagConfig(BaseModel):
