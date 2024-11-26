@@ -95,6 +95,7 @@ transcribers = ["google-cloud-speech"]
 telephony = ["twilio", "vonage"]
 langchain = ["langchain", "langchain-community"]
 langchain-extras = ["langchain-openai", "langchain-anthropic", "langchain-google-vertexai"]
+livekit = ["livekit"]
 all = [
     "google-cloud-texttospeech",
     "pvkoala",
