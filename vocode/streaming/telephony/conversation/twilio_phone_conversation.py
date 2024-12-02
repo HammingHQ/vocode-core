@@ -101,6 +101,7 @@ class TwilioPhoneConversation(AbstractPhoneConversation[TwilioOutputDevice]):
     async def send_dtmf(self, keypad_entries: List[KeypadEntry]):
         self.pending_restart = True
         digits = "".join(keypad_entry.value for keypad_entry in keypad_entries)
+        logger.debug(f"Sending Twilio DTMF: {digits}")
         await self.telephony_client.send_call_dtmf(
             twilio_sid=self.twilio_sid, conversation_id=self.id, digits=digits
         )
