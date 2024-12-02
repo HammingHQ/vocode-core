@@ -1058,6 +1058,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     message=BaseMessage(text=random.choice(CHECK_HUMAN_PRESENT_MESSAGE_CHOICES)),
                 )
                 check_human_present_count += 1
+            else:
+                check_human_present_count = 0
             # wait till the idle time would have passed the threshold if no action occurs
             await asyncio.sleep(ALLOWED_IDLE_TIME)
 
