@@ -68,7 +68,6 @@ def create_conversation(settings: Settings) -> HMEConversation:
     )
     agent_config = ChatGPTAgentConfig(
         openai_api_key=os.getenv("OPENAI_API_KEY"),
-        # initial_message=BaseMessage(text="What up?"),
         prompt_preamble="""Order one burger and a side of fries.""",
         actions=[
             EndConversationVocodeActionConfig(
@@ -101,7 +100,11 @@ def create_conversation(settings: Settings) -> HMEConversation:
 
 
 def create_output_device(settings: Settings) -> HMEOutputDevice:
-    return HMEOutputDevice()
+    return HMEOutputDevice(
+        sampling_rate=DEFAULT_SAMPLING_RATE,
+        audio_encoding=AUDIO_ENCODING,
+        audio_mode=settings.audio_mode,
+    )
 
 
 async def wait_for_termination(conversation: HMEConversation):
