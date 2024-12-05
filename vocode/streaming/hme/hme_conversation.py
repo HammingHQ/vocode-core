@@ -34,7 +34,7 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
     """
 
     def __init__(self, aot_provider_url: str, client_id: str, store_id: str, *args, **kwargs):
-        logger.info(f"Initializing HME conversation - client_id: {client_id}, store_id: {store_id}")
+        logger.bind(client_id=client_id, store_id=store_id).info("Starting HME conversation")
         super().__init__(*args, **kwargs)
 
         # Connection settings
@@ -48,6 +48,8 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         self.audio_websocket: Optional[ClientConnection] = None
         self.message_websocket: Optional[ClientConnection] = None
         self.auth_token: Optional[str] = None
+        self.arrival_response_received = asyncio.Event()
+        self.audio_frame_received = asyncio.Event()
 
     # Core lifecycle methods
 
@@ -55,6 +57,7 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         """Start audio and message WebSocket connections and conversation."""
         logger.info("Starting HME conversation")
 
+        # Start WebSocket tasks
         self.audio_task = asyncio_create_task(self.run_audio_task())
         self.message_task = asyncio_create_task(self.run_message_task())
 
@@ -63,8 +66,23 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         await self.message_connected.wait()
         logger.info("WebSocket connections established")
 
-        await super().start()
+        # Add delay after connections established
+        logger.debug("Waiting 1 second before sending arrival message...")
+        await asyncio.sleep(1.0)
+
+        # Send arrival message and wait for first audio frame
         await self.send_arrived_message()
+        try:
+            # Wait up to 5 seconds for first audio frame
+            await asyncio.wait_for(self.audio_frame_received.wait(), timeout=5.0)
+            logger.info("Received initial audio frame")
+
+            # Start the base conversation and let it manage its own lifecycle
+            await super().start()
+
+        except asyncio.TimeoutError:
+            logger.error("No audio received after arrival message, terminating")
+            await self.terminate()
 
     async def terminate(self):
         """Clean up resources and send depart message."""
@@ -75,9 +93,9 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
             logger.error(f"Error sending depart message: {e}")
 
         if self.audio_websocket:
-            await self.audio_websocket.close()
+            await self.audio_websocket.wait_closed()
         if self.message_websocket:
-            await self.message_websocket.close()
+            await self.message_websocket.wait_closed()
 
         await super().terminate()
 
@@ -99,6 +117,9 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         logger.info(f"[HME] Connecting to audio WebSocket: {url}")
         safe_headers = {**headers, "auth-token": "[REDACTED]"}
         logger.debug(f"[HME] Audio headers: {safe_headers}")
+
+        # Track seen CRCs to deduplicate messages
+        seen_crcs = set()
 
         try:
             async with connect(url, additional_headers=headers) as websocket:
@@ -122,13 +143,31 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
 
                     if computed_crc != crc_bytes:
                         logger.warning(
-                            f"CRC validation failed - Computed: {computed_crc}, Received: {crc_bytes}"
+                            "CRC validation failed",
+                            computed_crc=computed_crc,
+                            received_crc=crc_bytes,
                         )
                         continue
+
+                    # Skip if we've seen this CRC before
+                    if crc_bytes in seen_crcs:
+                        logger.debug(f"Skipping duplicate audio frame with CRC: {crc_bytes}")
+                        continue
+
+                    # Add CRC to seen set
+                    seen_crcs.add(crc_bytes)
+
+                    # Limit size of seen_crcs to prevent memory growth
+                    if len(seen_crcs) > 1000:
+                        seen_crcs.clear()
 
                     logger.debug(
                         f"Processing audio frame - Lane: {target_lane}, Size: {len(audio_bytes)} bytes, CRC: {computed_crc}"
                     )
+                    # Set event on first audio frame
+                    self.audio_frame_received.set()
+
+                    # Process audio
                     self.receive_audio(audio_bytes)
 
         except WebSocketException as e:

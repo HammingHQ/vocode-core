@@ -1,5 +1,4 @@
 import asyncio
-import zlib
 from typing import Optional
 
 from loguru import logger
@@ -7,149 +6,129 @@ from websockets.asyncio.client import ClientConnection
 
 from vocode.streaming.models.audio import AudioEncoding
 from vocode.streaming.output_device.abstract_output_device import AbstractOutputDevice
-from vocode.streaming.output_device.audio_chunk import ChunkState
-from vocode.streaming.telephony.constants import DEFAULT_AUDIO_ENCODING, DEFAULT_SAMPLING_RATE
+from vocode.streaming.telephony.constants import (
+    DEFAULT_AUDIO_ENCODING,
+    DEFAULT_SAMPLING_RATE,
+    PCM_SILENCE_BYTE,
+)
+from vocode.streaming.utils.create_task import asyncio_create_task
+
+
+class HMEError(Exception):
+    """Base exception for HME-related errors"""
+
+    pass
+
+
+class HMEConnectionError(HMEError):
+    """Raised when WebSocket connection fails"""
+
+    pass
 
 
 class HMEOutputDevice(AbstractOutputDevice):
-    """Handles audio output for HME/NEXEO system integration.
-
-    Formats and sends audio messages according to the NEXEO protocol specification:
-    - 4 bytes CRC32 of audio data
-    - 1 byte target lane
-    - 11 bytes header padding
-    - Audio data in LINEAR16 PCM format
-    """
+    """Handles audio output for HME/NEXEO system integration."""
 
     def __init__(
         self,
         sampling_rate: int = DEFAULT_SAMPLING_RATE,
         audio_encoding: AudioEncoding = DEFAULT_AUDIO_ENCODING,
-        audio_mode: str = "Fixed",  # "Fixed" or "Variable"
+        audio_mode: str = "Fixed",
     ):
         super().__init__(sampling_rate, audio_encoding)
         self.audio_websocket: Optional[ClientConnection] = None
-        self.audio_mode = audio_mode
-        # Calculate bytes per 30ms chunk for Fixed mode
-        self.fixed_chunk_size = int((sampling_rate * 2 * 0.03))  # 2 bytes per sample for LINEAR16
+        self.hme_chunk_size = 1920  # Total size for single lane (interleaved stereo)
+        self.chunk_interval = 0.03  # 30ms gap between chunks
+        self._audio_task: Optional[asyncio.Task] = None
+
         logger.info(
             f"Initialized HME output device - Mode: {audio_mode}, Sampling Rate: {sampling_rate}, "
-            f"Encoding: {audio_encoding}, Chunk Size: {self.fixed_chunk_size} bytes"
+            f"Encoding: {audio_encoding}, Chunk Size: {self.hme_chunk_size} bytes"
         )
 
+    async def __aenter__(self):
+        """Initialize resources when entering context"""
+        logger.info("Entering HME output device context")
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Cleanup resources when exiting context"""
+        await self.terminate()
+
+    async def _convert_mono_to_stereo(self, mono_data: bytes) -> bytes:
+        """Convert mono audio to stereo format"""
+        stereo_chunk = bytearray()
+        for i in range(0, len(mono_data), 2):
+            sample = mono_data[i : i + 2]
+            stereo_chunk.extend(sample * 2)  # Duplicate for both channels
+        return bytes(stereo_chunk)
+
+    async def _create_silence(self) -> bytes:
+        """Create a stereo silence chunk"""
+        return PCM_SILENCE_BYTE * self.hme_chunk_size
+
+    async def _send_chunk(self, chunk: bytes):
+        """Send audio chunk with proper timing"""
+        if not self.audio_websocket:
+            raise HMEConnectionError("No WebSocket connection available")
+
+        try:
+            await self.audio_websocket.send(chunk)
+            await asyncio.sleep(self.chunk_interval)
+        except Exception as e:
+            raise HMEError(f"Failed to send audio chunk: {str(e)}") from e
+
+    def _get_audio_data(self, item: any) -> bytes:
+        """Extract audio data from various input types"""
+        if hasattr(item, "payload"):
+            audio_chunk = item.payload
+            return audio_chunk.data if hasattr(audio_chunk, "data") else audio_chunk
+        return item
+
     async def _run_loop(self):
-        """Process audio chunks from the input queue and send them to the NEXEO system."""
+        """Process audio chunks with proper timing."""
+        logger.info("[HME] Starting audio output loop")
         try:
             while True:
-                try:
-                    item = await self._input_queue.get()
-                except asyncio.CancelledError:
-                    logger.info("[HME] Audio output loop cancelled")
-                    return
+                item = await self._input_queue.get()
+                if item is None:
+                    break
 
-                self.interruptible_event = item
-                audio_chunk = item.payload
+                if item:
+                    # Process actual audio data
+                    audio_data = self._get_audio_data(item)
+                    stereo_audio = await self._convert_mono_to_stereo(audio_data)
+                    if len(stereo_audio) == self.hme_chunk_size:
+                        await self._send_chunk(stereo_audio)
+                        logger.debug(f"[HME] Sent audio chunk of size: {len(stereo_audio)} bytes")
+                    else:
+                        logger.warning(f"[HME] Invalid chunk size: {len(stereo_audio)} bytes")
+                else:
+                    # Send silence when no audio data
+                    await self._send_chunk(await self._create_silence())
 
-                if item.is_interrupted():
-                    logger.info(f"[HME] Audio chunk interrupted - ID: {id(audio_chunk)}")
-                    audio_chunk.on_interrupt()
-                    audio_chunk.state = ChunkState.INTERRUPTED
-                    continue
-
-                logger.debug(
-                    f"[HME] Processing chunk: {id(audio_chunk)}, {len(audio_chunk.data)} bytes"
-                )
-                await self.play(audio_chunk.data)
-
-                if hasattr(audio_chunk, "on_play"):
-                    try:
-                        audio_chunk.on_play()
-                    except Exception as e:
-                        logger.error(
-                            f"[HME] Error calling on_play for chunk {id(audio_chunk)}: {e}"
-                        )
-
-                audio_chunk.state = ChunkState.PLAYED
-                self.interruptible_event.is_interruptible = False
-
+        except asyncio.CancelledError:
+            logger.info("[HME] Audio output loop cancelled")
+            raise
         except Exception as e:
-            logger.error(f"[HME] Audio loop failed: {str(e)}")
+            logger.error(f"[HME] Error in output loop: {e}")
+            raise
 
     def initialize_audio(self, websocket: ClientConnection):
         """Initialize the WebSocket connection for audio streaming."""
         logger.info(f"Initializing audio WebSocket connection - Remote: {websocket.remote_address}")
         self.audio_websocket = websocket
+        self._audio_task = asyncio_create_task(self._run_loop())
 
     async def play(self, audio_data: bytes):
-        """Send an audio message to the NEXEO system.
-
-        Format:
-        - 4 bytes: CRC32 of audio data
-        - 1 byte: target lane (1 for single lane)
-        - 11 bytes: header padding
-        - Remaining bytes: LINEAR16 PCM audio data
-
-        Args:
-            audio_data: Raw PCM audio bytes to send
-        """
-        if not self.audio_websocket:
-            logger.error("[HME] Cannot send audio - WebSocket not initialized")
-            return
-
-        try:
-            if self.audio_mode == "Fixed":
-                # Split audio into 30ms chunks
-                for i in range(0, len(audio_data), self.fixed_chunk_size):
-                    chunk = audio_data[i : i + self.fixed_chunk_size]
-                    if len(chunk) < self.fixed_chunk_size:
-                        # Pad last chunk if needed
-                        chunk = chunk.ljust(self.fixed_chunk_size, b"\x00")
-
-                    await self._send_chunk(chunk)
-                    # Wait 30ms before sending next chunk
-                    await asyncio.sleep(0.03)
-            else:
-                # Variable mode - send as is
-                await self._send_chunk(audio_data)
-
-        except Exception as e:
-            logger.error(
-                f"[HME] Error sending audio message: {str(e)}, Audio size: {len(audio_data)} bytes"
-            )
-            raise
-
-    async def _send_chunk(self, audio_data: bytes):
-        """Helper method to send a single chunk with proper HME formatting
-
-        Format:
-        - 4 bytes: CRC32 of audio data (big endian)
-        - 1 byte: target lane (1 for single lane)
-        - 11 bytes: header padding
-        - Remaining bytes: LINEAR16 PCM audio data
-        """
-        # Calculate CRC32 of audio data only
-        crc = zlib.crc32(audio_data) & 0xFFFFFFFF
-        crc_bytes = crc.to_bytes(4, byteorder="big")  # Match incoming big-endian format
-
-        # Single lane (1) for now per minimal implementation
-        target_lane = 1
-        lane_byte = target_lane.to_bytes(1, byteorder="big")
-
-        # 11 bytes of zero padding
-        padding = b"\x00" * 11
-
-        # Assemble message in same format as incoming
-        message = crc_bytes + lane_byte + padding + audio_data
-
-        logger.debug(
-            f"[HME] Sending audio chunk: Size={len(audio_data)} bytes, "
-            f"Lane={target_lane}, CRC={hex(crc)}"
-        )
-        await self.audio_websocket.send(message)
+        """Queue audio data for processing."""
+        await self._input_queue.put(audio_data)
 
     async def terminate(self):
         """Clean up resources and close the WebSocket connection."""
         logger.info("Terminating HME output device")
+        if self._audio_task:
+            self._audio_task.cancel()
         if self.audio_websocket:
             try:
                 logger.info(
@@ -161,4 +140,6 @@ class HMEOutputDevice(AbstractOutputDevice):
         await super().terminate()
 
     def interrupt(self):
-        pass
+        """Handle interruption of audio output"""
+        if self._audio_task:
+            self._audio_task.cancel()
