@@ -661,7 +661,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     await asyncio.sleep(10)
             except asyncio.CancelledError:
                 logger.debug("IvrWorker _loop_message done")
-                return  
+                await self.conversation.broadcast_interrupt()
+                return
 
         async def _run(self):
             while True:
