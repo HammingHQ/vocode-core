@@ -246,7 +246,12 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 return
             # ignore utterances during the initial message but still add them to the transcript
             initial_message_ongoing = not self.conversation.initial_message_tracker.is_set()
-            if initial_message_ongoing or self.should_ignore_utterance(transcription):
+            transcription_paused = self.conversation.transcription_paused.is_set()
+            if (
+                initial_message_ongoing
+                or transcription_paused
+                or self.should_ignore_utterance(transcription)
+            ):
                 logger.info(
                     f"Ignoring utterance: {transcription.message}. IMO: {initial_message_ongoing}"
                 )
@@ -690,10 +695,11 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
 
                     elif isinstance(current_node, IvrMessageNode):
                         loop_task = asyncio_create_task(self._loop_message(current_node.message))
-                        
                         available_commands = [link.message for link in current_node.links]
                         if current_node.link_type == IvrLinkType.COMMAND:
+                            self.conversation.transcription_paused.clear()
                             command = await self.wait_for_command(available_commands)
+                            self.conversation.transcription_paused.set()
                         elif current_node.link_type == IvrLinkType.DTMF:
                             command = await self.wait_for_dtmf(available_commands)
                         else:
@@ -886,8 +892,10 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         self.current_transcription_is_interrupt: bool = False
 
         self.initial_message_tracker = asyncio.Event()
+        self.transcription_paused = asyncio.Event()
 
         if ivr_dag:
+            self.transcription_paused.set()
             self.ivr_worker = self.IvrWorker(conversation=self, dag=ivr_dag)
             self.transcriptions_worker.consumer = self.ivr_worker
         else:
@@ -966,7 +974,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
     async def _ivr_handoff(self, initial_message: Optional[BaseMessage] = None):
         logger.debug("Waiting for IVR handoff")
         await self.ivr_worker.wait_for_finished()
-        
+        self.transcription_paused.clear()
+
         logger.debug("IVR handoff complete, restarting transcriptions worker")
         await self.transcriptions_worker.terminate()
 
