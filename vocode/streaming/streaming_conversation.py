@@ -28,7 +28,6 @@ from vocode.streaming.agent.base_agent import (
     BaseAgent,
     TranscriptionAgentInput,
 )
-from vocode.streaming.agent.chat_gpt_agent import ChatGPTAgent
 from vocode.streaming.constants import (
     ALLOWED_IDLE_TIME,
     CHECK_HUMAN_PRESENT_MESSAGE_CHOICES,
@@ -37,7 +36,7 @@ from vocode.streaming.constants import (
 from vocode.streaming.models.actions import EndOfTurn
 from vocode.streaming.models.agent import FillerAudioConfig
 from vocode.streaming.models.events import Sender
-from vocode.streaming.models.message import BaseMessage, BotBackchannel, LLMToken, SilenceMessage
+from vocode.streaming.models.message import BaseMessage, LLMToken, SilenceMessage
 from vocode.streaming.models.telephony import (
     IvrConfig,
     IvrDagConfig,
@@ -48,7 +47,6 @@ from vocode.streaming.models.telephony import (
 )
 from vocode.streaming.models.transcriber import TranscriberConfig, Transcription
 from vocode.streaming.models.transcript import Message, Transcript, TranscriptCompleteEvent
-from vocode.streaming.output_device.abstract_output_device import AbstractOutputDevice
 from vocode.streaming.output_device.audio_chunk import AudioChunk, ChunkState
 from vocode.streaming.synthesizer.base_synthesizer import (
     BaseSynthesizer,
@@ -115,6 +113,7 @@ AUDIO_FRAME_RATE = 8000
 AUDIO_SAMPLE_WIDTH = 1
 AUDIO_CHANNELS = 1
 
+
 class StreamingConversation(AudioPipeline[OutputDeviceType]):
     class QueueingInterruptibleEventFactory(InterruptibleEventFactory):
         def __init__(self, conversation: "StreamingConversation"):
@@ -168,7 +167,9 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.has_associated_unignored_utterance: bool = False
             self.human_backchannels_buffer: List[Transcription] = []
             self.ignore_next_message: bool = False
-            self.simulate_interrupt = self.conversation.transcriber.transcriber_config.endpointing_config.simulate_interrupt
+            self.simulate_interrupt = (
+                self.conversation.transcriber.transcriber_config.endpointing_config.simulate_interrupt
+            )
 
         def should_ignore_utterance(self, transcription: Transcription):
             if self.has_associated_unignored_utterance and not self.simulate_interrupt:
@@ -179,7 +180,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     f"Associated ignored utterance: {self.has_associated_ignored_utterance}. Bot still speaking: {bot_still_speaking}"
                 )
                 return self.is_transcription_backchannel(transcription)
-            return False
+            return True
 
         def is_transcription_backchannel(self, transcription: Transcription):
             num_words = len(transcription.message.strip().split())
@@ -189,10 +190,10 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             ):
                 logger.info(f"High interrupt sensitivity; {num_words} word(s) not a backchannel")
                 return False
-            
+
             threshold = LOW_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD
             if self.simulate_interrupt:
-                # When simulating interruptions, we need a high threshold so we don't get 
+                # When simulating interruptions, we need a high threshold so we don't get
                 # interrupted when we're just delivering the interruption.
                 threshold = LOWEST_INTERRUPT_SENSITIVITY_BACKCHANNEL_UTTERANCE_LENGTH_THRESHOLD
 
@@ -241,6 +242,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
 
         async def process(self, transcription: Transcription):
             self.conversation.mark_last_action_timestamp()
+            logger.info(f"Got transcription: {transcription.message}")
             if transcription.message.strip() == "":
                 logger.info("Ignoring empty transcription")
                 return
@@ -280,14 +282,18 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         transcription.wpm(),
                     )
                 )
-            if not self.conversation.is_human_speaking:
-                self.conversation.current_transcription_is_interrupt = (
-                    await self.conversation.broadcast_interrupt()
-                )
-                self.has_associated_unignored_utterance = not transcription.is_final
-                if self.conversation.current_transcription_is_interrupt:
-                    logger.debug("sent interrupt")
+            bot_was_in_medias_res = self.is_bot_in_medias_res() or self.is_bot_still_speaking()
+            if self.conversation.is_human_speaking:
                 logger.debug("Human started speaking")
+                if bot_was_in_medias_res:
+                    self.conversation.current_transcription_is_interrupt = (
+                        await self.conversation.broadcast_interrupt()
+                    )
+                    self.has_associated_unignored_utterance = not transcription.is_final
+                    if self.conversation.current_transcription_is_interrupt:
+                        logger.debug("sent interrupt")
+                else:
+                    self.conversation.current_transcription_is_interrupt = False
 
             transcription.is_interrupt = self.conversation.current_transcription_is_interrupt
             self.conversation.is_human_speaking = not transcription.is_final
@@ -306,7 +312,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 self.human_backchannels_buffer = []
 
                 if transcription.is_interrupt:
-                    transcription.bot_was_in_medias_res = self.is_bot_in_medias_res()
+                    transcription.bot_was_in_medias_res = bot_was_in_medias_res
                     logger.debug(
                         f"Bot is {'not ' if not transcription.bot_was_in_medias_res else ''}in medias res"
                     )
@@ -396,7 +402,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             super().__init__()
             self.conversation = conversation
             self.interruptible_event_factory = interruptible_event_factory
-            self.chunk_size = 960 # self.conversation._get_synthesizer_chunk_size()
+            self.chunk_size = 960  # self.conversation._get_synthesizer_chunk_size()
             self.last_agent_response_tracker: Optional[asyncio.Event] = None
             self.is_first_text_chunk = True
 
@@ -411,6 +417,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     is_interruptible=filler_audio.is_interruptible,
                     agent_response_tracker=agent_response_tracker,
                 )
+                logger.debug(f"Consuming filler audio event: {event}")
                 self.conversation.filler_audio_worker.consume_nonblocking(event)
             else:
                 logger.debug("No filler audio available for synthesizer")
@@ -420,6 +427,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 logger.debug("Synthesis disabled, not synthesizing speech")
                 return
             try:
+                logger.debug(f"Consuming agent response event: {item.payload}")
                 agent_response = item.payload
                 if isinstance(agent_response, AgentResponseFillerAudio):
                     self.send_filler_audio(item.agent_response_tracker)
@@ -439,9 +447,10 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         await self.conversation.filler_audio_worker.wait_for_filler_audio_to_finish()
 
                 if isinstance(agent_response_message.message, EndOfTurn):
-                    logger.debug("Sending end of turn")
-                    if isinstance(self.conversation.synthesizer, InputStreamingSynthesizer):
-                        await self.conversation.synthesizer.handle_end_of_turn()
+                    logger.debug(
+                        "Sending end of turn for message: {}".format(agent_response_message)
+                    )
+
                     self.consumer.consume_nonblocking(
                         self.interruptible_event_factory.create_interruptible_agent_response_event(
                             (agent_response_message.message, None),
@@ -449,6 +458,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                             agent_response_tracker=item.agent_response_tracker,
                         ),
                     )
+                    if isinstance(self.conversation.synthesizer, InputStreamingSynthesizer):
+                        await self.conversation.synthesizer.handle_end_of_turn()
                     self.is_first_text_chunk = True
                     return
 
@@ -528,11 +539,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 pass
 
     class SynthesisResultsWorker(
-        InterruptibleWorker[
-            InterruptibleAgentResponseEvent[
-                Tuple[Union[BaseMessage, EndOfTurn], Optional[SynthesisResult]]
-            ]
-        ]
+        AsyncQueueWorker[Tuple[Union[BaseMessage, EndOfTurn], Optional[SynthesisResult]]]
     ):
         """Plays SynthesisResults from the output queue on the output device"""
 
@@ -552,45 +559,37 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         ):
             try:
                 message, synthesis_result = item.payload
+
+                # If we have synthesis results, always send them first
+                if synthesis_result is not None:
+                    message_sent, cut_off = await self.conversation.send_speech_to_output(
+                        message.text if isinstance(message, BaseMessage) else "",
+                        synthesis_result,
+                        item.interruption_event,
+                        TEXT_TO_SPEECH_CHUNK_SIZE_SECONDS,
+                    )
+
+                # Now handle the message type
                 if isinstance(message, EndOfTurn):
                     if self.last_transcript_message is not None:
                         self.last_transcript_message.is_end_of_turn = True
                     item.agent_response_tracker.set()
                     return
-                assert synthesis_result is not None
-                # create an empty transcript message and attach it to the transcript
-                transcript_message = Message(
-                    text="",
-                    sender=Sender.BOT,
-                    is_backchannel=isinstance(message, BotBackchannel),
+
+                # Handle transcript for non-EndOfTurn messages
+                transcript_message = self.conversation.transcript.create_transcript_message(
+                    message.text, is_final=True
                 )
-                if not isinstance(message, SilenceMessage):
-                    self.conversation.transcript.add_message(
-                        message=transcript_message,
-                        conversation_id=self.conversation.id,
-                        publish_to_events_manager=False,
-                    )
-                if isinstance(message, SilenceMessage):
-                    logger.debug(f"Sending {message.trailing_silence_seconds} seconds of silence")
-                elif isinstance(message, BotBackchannel):
-                    logger.debug(f"Sending backchannel: {message}")
-                message_sent, cut_off = await self.conversation.send_speech_to_output(
-                    message.text,
-                    synthesis_result,
-                    item.interruption_event,
-                    TEXT_TO_SPEECH_CHUNK_SIZE_SECONDS,
-                    transcript_message=transcript_message,
-                )
-                # publish the transcript message now that it includes what was said during send_speech_to_output
                 self.conversation.transcript.maybe_publish_transcript_event_from_message(
                     message=transcript_message,
                     conversation_id=self.conversation.id,
                 )
                 item.agent_response_tracker.set()
-                logger.debug("Message sent: {}".format(message_sent))
+
                 if cut_off:
                     self.conversation.agent.update_last_bot_message_on_cut_off(message_sent)
                 self.last_transcript_message = transcript_message
+
             except asyncio.CancelledError:
                 pass
 
@@ -661,13 +660,15 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     await asyncio.sleep(10)
             except asyncio.CancelledError:
                 logger.debug("IvrWorker _loop_message done")
-                return  
+                return
 
         async def _run(self):
             while True:
                 try:
                     current_node = self.dag.nodes[self._current_node_id]
-                    logger.debug(f"IvrWorker current node: {current_node}, type: {type(current_node)}")
+                    logger.debug(
+                        f"IvrWorker current node: {current_node}, type: {type(current_node)}"
+                    )
 
                     if current_node.wait_delay:
                         await asyncio.sleep(current_node.wait_delay)
@@ -689,15 +690,17 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
 
                     elif isinstance(current_node, IvrMessageNode):
                         loop_task = asyncio_create_task(self._loop_message(current_node.message))
-                        
+
                         available_commands = [link.message for link in current_node.links]
                         if current_node.link_type == IvrLinkType.COMMAND:
                             command = await self.wait_for_command(available_commands)
                         elif current_node.link_type == IvrLinkType.DTMF:
                             command = await self.wait_for_dtmf(available_commands)
                         else:
-                            raise Exception(f"IvrWorker unknown link type: {current_node.link_type}")
-                        
+                            raise Exception(
+                                f"IvrWorker unknown link type: {current_node.link_type}"
+                            )
+
                         loop_task.cancel()
                         await loop_task
 
@@ -754,7 +757,9 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                 for command in available_commands:
                     match_score = fuzz.partial_ratio(command.lower(), received_message.lower())
                     if match_score >= self.fuzz_threshold:
-                        logger.debug(f"IVR received MATCHING command: {command} with score {match_score}")
+                        logger.debug(
+                            f"IVR received MATCHING command: {command} with score {match_score}"
+                        )
                         await self._set_listen_queue(None)
                         return command
                 else:
@@ -870,7 +875,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         if not self.events_manager:
             self.should_run_events_manager = True
             self.events_manager = EventsManager()
-        
+
         self.events_task: Optional[asyncio.Task] = None
         self.transcript = Transcript()
         self.transcript.attach_events_manager(self.events_manager)
@@ -965,7 +970,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
     async def _ivr_handoff(self, initial_message: Optional[BaseMessage] = None):
         logger.debug("Waiting for IVR handoff")
         await self.ivr_worker.wait_for_finished()
-        
+
         logger.debug("IVR handoff complete, restarting transcriptions worker")
         await self.transcriptions_worker.terminate()
 
@@ -1042,30 +1047,39 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         return
 
     async def check_for_idle(self):
-        """Asks if human is still on the line if no activity is detected, and terminates the conversation if not."""
+        """Asks if human is still on the line if no activity is detected."""
         await self.initial_message_tracker.wait()
-        logger.debug("Started checking for idle")
+        logger.debug(
+            "Starting idle check, last_action_timestamp={}, idle_threshold={}",
+            self.last_action_timestamp,
+            self.idle_time_threshold,
+        )
+
         check_human_present_count = 0
         check_human_present_threshold = self.agent.get_agent_config().num_check_human_present_times
+
         while self.is_active():
-            if (
-                not self.check_for_idle_paused
-            ) and time.time() - self.last_action_timestamp > self.idle_time_threshold:
+            current_time = time.time()
+            time_since_last_action = current_time - self.last_action_timestamp
+
+            if not self.check_for_idle_paused and time_since_last_action > self.idle_time_threshold:
+                logger.debug(f"Time since last action: {time_since_last_action:.2f}s")
                 if check_human_present_count >= check_human_present_threshold:
-                    # Stop the phone call after some retries to prevent infinitely long call where human is just silent.
                     await self.action_on_idle()
                 await self.send_single_message(
                     message=BaseMessage(text=random.choice(CHECK_HUMAN_PRESENT_MESSAGE_CHOICES)),
                 )
                 check_human_present_count += 1
-            # wait till the idle time would have passed the threshold if no action occurs
+
             await asyncio.sleep(ALLOWED_IDLE_TIME)
 
     def _load_audio_segments(self) -> Dict[str, bytes]:
         audio_segments = {}
         for sound in ["beep", "ring"]:
             try:
-                audio_segment = AudioSegment.from_file(os.path.join(AUDIO_FILES_PATH, f"{sound}.wav"))
+                audio_segment = AudioSegment.from_file(
+                    os.path.join(AUDIO_FILES_PATH, f"{sound}.wav")
+                )
                 audio_segment = audio_segment.set_channels(AUDIO_CHANNELS)
                 audio_segment = audio_segment.set_frame_rate(AUDIO_FRAME_RATE)
                 audio_segment = audio_segment.set_sample_width(AUDIO_SAMPLE_WIDTH)
@@ -1082,7 +1096,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         audio_data = self._audio_segments[sound]
         chunk_size = AUDIO_FRAME_RATE // 10
         for i in range(0, len(audio_data), chunk_size):
-            chunk = AudioChunk(data=audio_data[i:i + chunk_size])
+            chunk = AudioChunk(data=audio_data[i : i + chunk_size])
             self.output_device.consume_nonblocking(
                 InterruptibleEvent(
                     payload=chunk,
@@ -1127,6 +1141,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
 
     def mark_last_action_timestamp(self):
         self.last_action_timestamp = time.time()
+        logger.debug(f"Updated last_action_timestamp: {self.last_action_timestamp}")
 
     async def broadcast_interrupt(self):
         """Stops all inflight events and cancels all workers that are sending output
@@ -1227,6 +1242,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     seconds_spoken += seconds_per_chunk
                     if transcript_message:
                         transcript_message.text = synthesis_result.get_message_up_to(seconds_spoken)
+
+                    logger.debug(f"Playing chunk {chunk_idx}")
                 except Exception as e:
                     logger.error(f"Error in _on_play: {e}")
 
@@ -1252,6 +1269,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         processed_events: List[asyncio.Event] = []
         interrupted_before_all_chunks_sent = False
         async for chunk_idx, chunk_result in enumerate_async_iter(synthesis_result.chunk_generator):
+            logger.debug(f"Generated audio chunk {chunk_idx}: {len(chunk_result.chunk)} bytes")
+
             if stop_event.is_set():
                 logger.debug("Interrupted before all chunks were sent")
                 interrupted_before_all_chunks_sent = True
@@ -1276,6 +1295,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         interruption_event=stop_event,
                     ),
                 )
+                logger.debug(f"Sent chunk {chunk_idx} to output device")
+
             audio_chunks.append(audio_chunk)
             processed_events.append(processed_event)
 
@@ -1330,7 +1351,36 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.events_task.cancel()
             await self.events_manager.flush()
         else:
-            logger.debug("Terminating events: Skipping because events_manager task is managed by the caller")
+            logger.debug(
+                "Terminating events: Skipping because events_manager task is managed by the caller"
+            )
+        logger.debug("Tearing down synthesizer")
+        await self.synthesizer.tear_down()
+        logger.debug("Terminating agent")
+        await self.agent.terminate()
+        logger.debug("Terminating output device")
+        await self.output_device.terminate()
+        logger.debug("Terminating speech transcriber")
+        await self.transcriber.terminate()
+        logger.debug("Terminating transcriptions worker")
+        await self.transcriptions_worker.terminate()
+        logger.debug("Terminating final transcriptions worker")
+        await self.agent_responses_worker.terminate()
+        logger.debug("Terminating synthesis results worker")
+        await self.synthesis_results_worker.terminate()
+        if self.filler_audio_worker is not None:
+            logger.debug("Terminating filler audio worker")
+            await self.filler_audio_worker.terminate()
+        if self.actions_worker is not None:
+            logger.debug("Terminating actions worker")
+            await self.actions_worker.terminate()
+        logger.debug("Successfully terminated")
+
+    def is_active(self):
+        return not self.is_terminated.is_set()
+
+    async def wait_for_termination(self):
+        await self.is_terminated.wait()
         logger.debug("Tearing down synthesizer")
         await self.synthesizer.tear_down()
         logger.debug("Terminating agent")

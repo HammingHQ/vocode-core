@@ -1,9 +1,9 @@
 import asyncio
 import json
+import random
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Union
 from urllib.parse import urlencode
-import random
 
 import sentry_sdk
 import websockets
@@ -22,7 +22,11 @@ from vocode.streaming.models.transcriber import (
     Transcription,
 )
 from vocode.streaming.transcriber.base_transcriber import BaseAsyncTranscriber
-from vocode.utils.sentry_utils import CustomSentrySpans, sentry_configured, sentry_create_span
+from vocode.utils.sentry_utils import (
+    CustomSentrySpans,
+    sentry_configured,
+    sentry_create_span,
+)
 
 PUNCTUATION_TERMINATORS = [".", "!", "?"]
 NUM_RESTARTS = 5
@@ -280,7 +284,7 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
         log_params = {"endpointing_type": endpointing_config.type}
 
         if self.transcriber_config.endpointing_config.simulate_interrupt:
-            # When simulating interruptions, we need the transcript to publish 
+            # When simulating interruptions, we need the transcript to publish
             # events, even when it's not an actual endpoint.
             if random.random() < 0.8:
                 log_params["source"] = "random_interrupt"
@@ -408,20 +412,28 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
                 async def sender(
                     ws: WebSocketClientProtocol,
                 ):  # sends audio to websocket
+                    self.connected_ts = now()
                     byte_rate = self.get_byte_rate()
+                    keepalive_interval = 3  # seconds
+                    last_sent = now()
 
                     while not self._ended:
                         try:
-                            data = await asyncio.wait_for(self._input_queue.get(), 5)
+                            data = await asyncio.wait_for(
+                                self._input_queue.get(), keepalive_interval
+                            )
+                            self.audio_cursor += len(data) / byte_rate
+
+                            if not self.start_sending_ts:
+                                self.start_sending_ts = now()
+
+                            await ws.send(data)
+                            last_sent = now()
+
                         except asyncio.exceptions.TimeoutError:
-                            break
-
-                        self.audio_cursor += len(data) / byte_rate
-
-                        if not self.start_sending_ts:
-                            self.start_sending_ts = now()
-
-                        await ws.send(data)
+                            if (now() - last_sent).total_seconds() >= keepalive_interval:
+                                await ws.send(json.dumps({"type": "KeepAlive"}))
+                                last_sent = now()
 
                     logger.debug("Terminating Deepgram transcriber sender")
 

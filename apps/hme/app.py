@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     store_id: str = os.getenv("STORE_ID", "default-store")
     audio_mode: str = os.getenv("AUDIO_MODE", "Fixed")
     public_key_path: str = os.getenv("PUBLIC_KEY_PATH", "pubkey.pem")
-    conversation_timeout: int = int(os.getenv("CONVERSATION_TIMEOUT", "120"))  # seconds
+    conversation_timeout: int = int(os.getenv("CONVERSATION_TIMEOUT", "600"))  # seconds
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -58,18 +58,14 @@ async def wait_for_termination(conversation: HMEConversation, timeout: int):
 
 async def run_conversation(settings: Settings):
     try:
-        logger.info("Starting conversation")
         conversation = create_conversation(settings)
-
-        # Start the conversation
         await conversation.start()
-        logger.info("Conversation started")
-
-        # Wait for termination or timeout
         await wait_for_termination(conversation, settings.conversation_timeout)
-
     except Exception as e:
         logger.error(f"Error in conversation: {e}")
+        if conversation:
+            await conversation.terminate()
+        raise
 
 
 def create_conversation(settings: Settings) -> HMEConversation:
@@ -87,10 +83,11 @@ def create_conversation(settings: Settings) -> HMEConversation:
         api_key=os.getenv("DEEPGRAM_API_KEY"),
     )
     agent_config = ChatGPTAgentConfig(
+        model_name="gpt-4o-mini",
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         prompt_preamble="""You are a CUSTOMER at a drive-through.
         You want to order a classic burger with cheese and a side of fries.
-        Respond naturally to the drive-through worker's questions.
+        Respond naturally to the drive-through worker's questions, be concise and direct, preferring short YES/NO answers.
         Keep responses concise and direct, as if speaking through a drive-through speaker.
         If you hear a partial or cut-off response from the worker, wait for them to repeat or clarify rather than taking on their role.
         Never pretend to be the drive-through worker - you are always the customer.""",
@@ -130,6 +127,7 @@ def create_output_device(settings: Settings) -> HMEOutputDevice:
         sampling_rate=DEFAULT_SAMPLING_RATE,
         audio_encoding=AUDIO_ENCODING,
         audio_mode=settings.audio_mode,
+        enable_local_playback=True,
     )
 
 
