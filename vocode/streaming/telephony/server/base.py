@@ -1,12 +1,11 @@
 import abc
-import aiohttp
 import asyncio
 from functools import partial
 from typing import List, Optional
 
-from fastapi import APIRouter, Form, Request, Response, Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
+import aiohttp
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
 from pydantic.v1 import BaseModel, Field
 
@@ -30,15 +29,17 @@ from vocode.streaming.telephony.client.abstract_telephony_client import Abstract
 from vocode.streaming.telephony.client.twilio_client import TwilioClient
 from vocode.streaming.telephony.client.vonage_client import VonageClient
 from vocode.streaming.telephony.config_manager.base_config_manager import BaseConfigManager
-from vocode.streaming.telephony.config_manager.base_dynamic_call_manager import BaseDynamicCallManager
+from vocode.streaming.telephony.config_manager.base_dynamic_call_manager import (
+    BaseDynamicCallManager,
+)
 from vocode.streaming.telephony.server.router.calls import CallsRouter
 from vocode.streaming.telephony.templater import get_connection_twiml
 from vocode.streaming.transcriber.abstract_factory import AbstractTranscriberFactory
 from vocode.streaming.transcriber.default_factory import DefaultTranscriberFactory
 from vocode.streaming.utils import create_conversation_id
+from vocode.streaming.utils.async_requester import AsyncRequestor
 from vocode.streaming.utils.create_task import asyncio_create_task
 from vocode.streaming.utils.events_manager import EventsManager
-from vocode.streaming.utils.async_requester import AsyncRequestor
 
 
 class AbstractInboundCallConfig(BaseModel, abc.ABC):
@@ -152,7 +153,7 @@ class TelephonyServer:
         ) -> Response:
             conversation_id = create_conversation_id()
             if self.dynamic_call_manager and inbound_call_config.dynamic_call:
-                agent_config = await self.dynamic_call_manager.create_call(
+                agent_config, ivr_dag = await self.dynamic_call_manager.create_call(
                     twilio_sid,
                     twilio_from,
                     twilio_to, 
@@ -173,7 +174,7 @@ class TelephonyServer:
                 to_phone=twilio_to,
                 direction="inbound",
                 ivr_config=inbound_call_config.ivr_config,
-                ivr_dag=inbound_call_config.ivr_dag,
+                ivr_dag=ivr_dag,
             )
             await self.config_manager.save_config(conversation_id, call_config)
             return get_connection_twiml(base_url=self.base_url, call_id=conversation_id)
