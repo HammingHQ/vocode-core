@@ -651,18 +651,19 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             if dtmf_queue:
                 dtmf_queue.put_nowait(digit)
 
-        async def _send_single_message(self, message: str):
+        async def _send_single_message(self, message: str, is_interruptible: bool = False):
             message_tracker = asyncio.Event()
             await self.conversation.send_single_message(
                 message=BaseMessage(text=message),
                 message_tracker=message_tracker,
+                is_interruptible=is_interruptible,
             )
             await message_tracker.wait()
 
-        async def _loop_message(self, message: str):
+        async def _loop_message(self, message: str, is_interruptible: bool = False):
             try:
                 while True:
-                    await self._send_single_message(message)
+                    await self._send_single_message(message, is_interruptible=is_interruptible)
                     await asyncio.sleep(10)
             except asyncio.CancelledError:
                 logger.debug("IvrWorker _loop_message done")
@@ -694,7 +695,9 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                             await asyncio.sleep(current_node.delay)
 
                     elif isinstance(current_node, IvrMessageNode):
-                        loop_task = asyncio_create_task(self._loop_message(current_node.message))
+                        loop_task = asyncio_create_task(
+                            self._loop_message(current_node.message, is_interruptible=True)
+                        )
                         available_commands = [link.message for link in current_node.links]
                         if current_node.link_type == IvrLinkType.COMMAND:
                             self.conversation.transcription_paused.clear()
@@ -1105,11 +1108,12 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         self,
         message: BaseMessage,
         message_tracker: Optional[asyncio.Event] = None,
+        is_interruptible: bool = False,
     ):
         agent_response_event = (
             self.interruptible_event_factory.create_interruptible_agent_response_event(
                 AgentResponseMessage(message=message, is_sole_text_chunk=True),
-                is_interruptible=False,
+                is_interruptible=is_interruptible,
                 agent_response_tracker=message_tracker,
             )
         )
