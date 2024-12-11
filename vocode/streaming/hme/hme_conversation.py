@@ -1,6 +1,5 @@
 import asyncio
 import json
-import time
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -10,9 +9,8 @@ from loguru import logger
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
-from vocode.streaming.models.transcriber import Transcription
 from vocode.streaming.output_device.hme_output_device import HMEOutputDevice
-from vocode.streaming.streaming_conversation import InterruptibleEventFactory, StreamingConversation
+from vocode.streaming.streaming_conversation import StreamingConversation
 from vocode.streaming.utils.create_task import asyncio_create_task
 from vocode.utils.gen_encrypted_token import generate_encrypted_token
 
@@ -24,59 +22,6 @@ class StreamType(str, Enum):
 
 
 class HMEConversation(StreamingConversation[HMEOutputDevice]):
-    class TranscriptionsWorker(StreamingConversation.TranscriptionsWorker):
-        def __init__(
-            self,
-            conversation: "HMEConversation",
-            interruptible_event_factory: InterruptibleEventFactory,
-        ):
-            super().__init__(conversation, interruptible_event_factory)
-            self.last_transcription = None
-            self.transcription_start_time = None
-            logger.debug("Initialized HME TranscriptionsWorker")
-
-        async def process(self, transcription: Transcription):
-            # Clean up transcription text
-            original_message = transcription.message
-            transcription.message = transcription.message.strip()
-            logger.debug(
-                f"Cleaned transcription from '{original_message}' to '{transcription.message}'"
-            )
-
-            # Skip if empty
-            if not transcription.message:
-                logger.debug("Skipping empty transcription")
-                return
-
-            # Start tracking new transcription
-            if self.last_transcription is None or not transcription.message.startswith(
-                self.last_transcription
-            ):
-                logger.info(f"Starting new transcription: '{transcription.message}'")
-                self.transcription_start_time = time.time()
-                self.last_transcription = transcription.message
-                self.conversation.is_human_speaking = True
-                transcription.is_final = False
-                logger.debug("Set human speaking state to True")
-            else:
-                # If transcription hasn't changed for 1 second, mark as final
-                time_since_start = time.time() - self.transcription_start_time
-                if time_since_start > 1.0:
-                    logger.info(
-                        f"Finalizing transcription after {time_since_start:.2f}s: '{transcription.message}'"
-                    )
-                    transcription.is_final = True
-                    self.conversation.is_human_speaking = False
-                    self.last_transcription = None
-                    self.transcription_start_time = None
-                    logger.debug("Reset transcription state and set human speaking to False")
-                else:
-                    logger.debug(f"Transcription still in progress ({time_since_start:.2f}s)")
-
-            # Process the transcription
-            logger.debug("Passing transcription to parent processor")
-            await super().process(transcription)
-
     """Manages HME audio and message WebSocket connections and streaming conversation.
 
     Attributes:
@@ -113,9 +58,6 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         self.arrival_response_received = asyncio.Event()
         self.audio_frame_received = asyncio.Event()
         self.idle_time_threshold = idle_timeout_seconds
-        # self.transcriptions_worker = self.TranscriptionsWorker(
-        #     self, self.interruptible_event_factory
-        # )
 
     # Core lifecycle methods
 
@@ -169,6 +111,22 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
 
     # WebSocket connection handlers
 
+    async def _convert_mono_to_stereo(self, mono_data: bytes) -> bytes:
+        """Convert mono audio to stereo format."""
+        try:
+            if not mono_data:
+                logger.warning("Received empty mono data")
+                return b""
+
+            stereo_chunk = bytearray()
+            for i in range(0, len(mono_data), 2):
+                sample = mono_data[i : i + 2]
+                stereo_chunk.extend(sample * 2)  # Duplicate for both channels
+            return bytes(stereo_chunk)
+        except Exception as e:
+            logger.error(f"Error converting mono to stereo: {e}")
+            return b""
+
     async def run_audio_task(self):
         """Maintain audio WebSocket connection and handle incoming audio frames."""
         url = f"{self.aot_provider_url}/audio"
@@ -176,6 +134,10 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         logger.info(f"[HME] Connecting to audio WebSocket: {url}")
         safe_headers = {**headers, "auth-token": "[REDACTED]"}
         logger.debug(f"[HME] Audio headers: {safe_headers}")
+
+        # Open file for writing audio data
+        audio_file = open(f"audio_{self.id}.raw", "wb")
+        logger.info(f"[HME] Writing audio to file: audio_{self.id}.raw")
 
         try:
             async with connect(url, additional_headers=headers) as websocket:
@@ -186,18 +148,22 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
 
                 async for message in websocket:
                     # Let output device handle all audio frame processing
-                    self.receive_audio(message)
+
                     # Skip header bytes (16 bytes: 4 for CRC, 1 for lane, 11 padding)
                     audio_data = message[16:]
+                    self.receive_audio(audio_data)
                     logger.debug(f"[HME] Audio frame received: {len(audio_data)} bytes")
 
-                    self.consume_nonblocking(audio_data)
+                    # Write audio data to file
+                    audio_file.write(audio_data)
+                    audio_file.flush()
 
                     # Play incoming audio through local speaker if enabled
                     if (
                         self.output_device.enable_local_playback
                         and self.output_device.speaker_output
                     ):
+
                         await self.output_device.speaker_output.play(audio_data)
                         logger.debug("[HME] Played incoming audio through speaker")
 
@@ -208,6 +174,9 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
             self._audio_error = e
             self.audio_connected.set()  # Unblock start() but with error
             raise
+        finally:
+            audio_file.close()
+            logger.info(f"[HME] Closed audio file: audio_{self.id}.raw")
 
     async def run_message_task(self):
         """Maintain message WebSocket connection and handle incoming messages."""
@@ -235,7 +204,6 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
                     topic = parsed_message.get("topic")
                     if topic == "aot/request/audio-interruption":
                         logger.info("[HME] Received audio interruption request")
-                        # self.output_device.interrupt()
 
         except WebSocketException as e:
             logger.error(f"Message WebSocket error: {str(e)}")
@@ -318,3 +286,12 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
             "stream-type": stream_type.value,
             "auth-token": self.auth_token,
         }
+
+    async def reconnect_audio(self):
+        """Attempt to reconnect audio websocket if disconnected"""
+        try:
+            if self.output_device.audio_websocket:
+                await self.output_device.audio_websocket.close()
+            await self.run_audio_task()
+        except Exception as e:
+            logger.error(f"Failed to reconnect audio: {e}")

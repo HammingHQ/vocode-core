@@ -10,7 +10,18 @@ import re
 import threading
 import time
 import typing
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Literal, Optional, Tuple, Union
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import sentry_sdk
 from fuzzywuzzy import fuzz
@@ -36,7 +47,12 @@ from vocode.streaming.constants import (
 from vocode.streaming.models.actions import EndOfTurn
 from vocode.streaming.models.agent import FillerAudioConfig
 from vocode.streaming.models.events import Sender
-from vocode.streaming.models.message import BaseMessage, LLMToken, SilenceMessage
+from vocode.streaming.models.message import (
+    BaseMessage,
+    BotBackchannel,
+    LLMToken,
+    SilenceMessage,
+)
 from vocode.streaming.models.telephony import (
     IvrConfig,
     IvrDagConfig,
@@ -46,15 +62,24 @@ from vocode.streaming.models.telephony import (
     IvrPlayNode,
 )
 from vocode.streaming.models.transcriber import TranscriberConfig, Transcription
-from vocode.streaming.models.transcript import Message, Transcript, TranscriptCompleteEvent
+from vocode.streaming.models.transcript import (
+    Message,
+    Transcript,
+    TranscriptCompleteEvent,
+)
 from vocode.streaming.output_device.audio_chunk import AudioChunk, ChunkState
 from vocode.streaming.synthesizer.base_synthesizer import (
     BaseSynthesizer,
     FillerAudio,
     SynthesisResult,
 )
-from vocode.streaming.synthesizer.input_streaming_synthesizer import InputStreamingSynthesizer
-from vocode.streaming.telephony.constants import DEFAULT_HOLD_DURATION, DEFAULT_HOLD_MESSAGE_DELAY
+from vocode.streaming.synthesizer.input_streaming_synthesizer import (
+    InputStreamingSynthesizer,
+)
+from vocode.streaming.telephony.constants import (
+    DEFAULT_HOLD_DURATION,
+    DEFAULT_HOLD_MESSAGE_DELAY,
+)
 from vocode.streaming.transcriber.base_transcriber import BaseTranscriber
 from vocode.streaming.transcriber.deepgram_transcriber import DeepgramTranscriber
 from vocode.streaming.utils import (
@@ -170,6 +195,8 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             self.simulate_interrupt = (
                 self.conversation.transcriber.transcriber_config.endpointing_config.simulate_interrupt
             )
+            self.last_transcription: Optional[str] = None
+            self.last_transcription_time: Optional[float] = None
 
         def should_ignore_utterance(self, transcription: Transcription):
             if self.has_associated_unignored_utterance and not self.simulate_interrupt:
@@ -180,7 +207,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     f"Associated ignored utterance: {self.has_associated_ignored_utterance}. Bot still speaking: {bot_still_speaking}"
                 )
                 return self.is_transcription_backchannel(transcription)
-            return True
+            return False
 
         def is_transcription_backchannel(self, transcription: Transcription):
             num_words = len(transcription.message.strip().split())
@@ -241,8 +268,20 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             )
 
         async def process(self, transcription: Transcription):
+            # Deduplicate transcriptions within a small time window
+            current_time = time.time()
+            if (
+                self.last_transcription == transcription.message
+                and self.last_transcription_time
+                and current_time - self.last_transcription_time < 0.5
+            ):
+                logger.debug(f"Ignoring duplicate transcription: {transcription.message}")
+                return
+
+            self.last_transcription = transcription.message
+            self.last_transcription_time = current_time
+
             self.conversation.mark_last_action_timestamp()
-            logger.info(f"Got transcription: {transcription.message}")
             if transcription.message.strip() == "":
                 logger.info("Ignoring empty transcription")
                 return
@@ -276,7 +315,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     )
                     self.deepgram_transcriber.is_first_transcription = False
                 logger.debug(
-                    "Got transcription: {}, confidence: {}, wpm: {}".format(
+                    "Got final transcription: {}, confidence: {}, wpm: {}".format(
                         transcription.message,
                         transcription.confidence,
                         transcription.wpm(),
@@ -560,32 +599,42 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             try:
                 message, synthesis_result = item.payload
 
-                # If we have synthesis results, always send them first
-                if synthesis_result is not None:
-                    message_sent, cut_off = await self.conversation.send_speech_to_output(
-                        message.text if isinstance(message, BaseMessage) else "",
-                        synthesis_result,
-                        item.interruption_event,
-                        TEXT_TO_SPEECH_CHUNK_SIZE_SECONDS,
-                    )
-
                 # Now handle the message type
                 if isinstance(message, EndOfTurn):
                     if self.last_transcript_message is not None:
                         self.last_transcript_message.is_end_of_turn = True
                     item.agent_response_tracker.set()
                     return
-
-                # Handle transcript for non-EndOfTurn messages
-                transcript_message = self.conversation.transcript.create_transcript_message(
-                    message.text, is_final=True
+                # create an empty transcript message and attach it to the transcript
+                transcript_message = Message(
+                    text="",
+                    sender=Sender.BOT,
+                    is_backchannel=isinstance(message, BotBackchannel),
                 )
+                if not isinstance(message, SilenceMessage):
+                    self.conversation.transcript.add_message(
+                        message=transcript_message,
+                        conversation_id=self.conversation.id,
+                        publish_to_events_manager=False,
+                    )
+                if isinstance(message, SilenceMessage):
+                    logger.debug(f"Sending {message.trailing_silence_seconds} seconds of silence")
+                elif isinstance(message, BotBackchannel):
+                    logger.debug(f"Sending backchannel: {message}")
+                message_sent, cut_off = await self.conversation.send_speech_to_output(
+                    message.text,
+                    synthesis_result,
+                    item.interruption_event,
+                    TEXT_TO_SPEECH_CHUNK_SIZE_SECONDS,
+                    transcript_message=transcript_message,
+                )
+                # publish the transcript message now that it includes what was said during send_speech_to_output
                 self.conversation.transcript.maybe_publish_transcript_event_from_message(
                     message=transcript_message,
                     conversation_id=self.conversation.id,
                 )
                 item.agent_response_tracker.set()
-
+                logger.debug("Message sent: {}".format(message_sent))
                 if cut_off:
                     self.conversation.agent.update_last_bot_message_on_cut_off(message_sent)
                 self.last_transcript_message = transcript_message
@@ -1141,7 +1190,6 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
 
     def mark_last_action_timestamp(self):
         self.last_action_timestamp = time.time()
-        logger.debug(f"Updated last_action_timestamp: {self.last_action_timestamp}")
 
     async def broadcast_interrupt(self):
         """Stops all inflight events and cancels all workers that are sending output
@@ -1243,7 +1291,6 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                     if transcript_message:
                         transcript_message.text = synthesis_result.get_message_up_to(seconds_spoken)
 
-                    logger.debug(f"Playing chunk {chunk_idx}")
                 except Exception as e:
                     logger.error(f"Error in _on_play: {e}")
 

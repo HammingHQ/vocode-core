@@ -280,32 +280,29 @@ class AzureSynthesizer(BaseSynthesizer[AzureSynthesizerConfig]):
                     self.thread_pool_executor,
                     lambda: audio_data_stream.read_data(audio_buffer),
                 )
-                logger.debug(
-                    f"[Azure] First chunk read: filled_size={filled_size}, "
-                    f"buffer_size={len(audio_buffer)}, offset={offset}"
-                )
+
 
                 await self._check_stream_for_errors(audio_data_stream)
                 if filled_size != chunk_size:
-                    logger.debug(f"[Azure] Yielding final chunk: size={len(audio_buffer[offset:])}")
+  
                     yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer[offset:]), True)
                     return
                 else:
-                    logger.debug(f"[Azure] Yielding chunk: size={len(audio_buffer[offset:])}")
+
                     yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer[offset:]), False)
 
                 while True:
                     audio_buffer = bytes(chunk_size)
                     filled_size = audio_data_stream.read_data(audio_buffer)
-                    logger.debug(f"[Azure] Read chunk: filled_size={filled_size}")
+
 
                     if filled_size != chunk_size:
-                        logger.debug(f"[Azure] Yielding final chunk: size={filled_size - offset}")
+
                         yield SynthesisResult.ChunkResult(
                             chunk_transform(audio_buffer[: filled_size - offset]), True
                         )
                         break
-                    logger.debug(f"[Azure] Yielding chunk: size={len(audio_buffer)}")
+
                     yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer), False)
             except Exception as e:
                 logger.error(f"[Azure] Error in chunk generator: {e}")

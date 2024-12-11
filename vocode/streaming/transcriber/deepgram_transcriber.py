@@ -455,6 +455,8 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
                             break
                         data = json.loads(msg)
 
+                        logger.debug(f"[DEEPGRAM] Received data: {data}")
+
                         if "start" in data and "duration" in data:
                             self._track_transcription_latency(
                                 start=data["start"],

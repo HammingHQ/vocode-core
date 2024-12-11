@@ -10,6 +10,7 @@ from vocode.streaming.models.audio import AudioEncoding
 from vocode.streaming.output_device.abstract_output_device import AbstractOutputDevice
 from vocode.streaming.output_device.audio_chunk import AudioChunk, ChunkState
 from vocode.streaming.output_device.blocking_speaker_output import BlockingSpeakerOutput
+from vocode.streaming.streaming_conversation import StreamingConversation
 from vocode.streaming.telephony.constants import (
     DEFAULT_AUDIO_ENCODING,
     DEFAULT_SAMPLING_RATE,
@@ -40,9 +41,11 @@ class HMEOutputDevice(AbstractOutputDevice):
         audio_encoding: AudioEncoding = DEFAULT_AUDIO_ENCODING,
         audio_mode: str = "Fixed",
         enable_local_playback: bool = True,
+        conversation: Optional[StreamingConversation] = None,
     ):
         super().__init__(sampling_rate, audio_encoding)
         self.audio_websocket: Optional[ClientConnection] = None
+        self.audio_websocket_lock = asyncio.Lock()
         self.hme_chunk_size = 1920
         self.chunk_interval = 0.03
         self._audio_task: Optional[asyncio.Task] = None
@@ -50,6 +53,7 @@ class HMEOutputDevice(AbstractOutputDevice):
         self.enable_local_playback = enable_local_playback
         self.speaker_output = None
         self._ready = asyncio.Event()
+        self.conversation = conversation
 
         if enable_local_playback:
             try:
@@ -61,7 +65,7 @@ class HMEOutputDevice(AbstractOutputDevice):
                 else:
                     self.speaker_output = BlockingSpeakerOutput(
                         device_info=device_info,
-                        sampling_rate=self.sampling_rate,
+                        sampling_rate=24000,
                         audio_encoding=self.audio_encoding,
                     )
                     self.speaker_output.start()
@@ -112,12 +116,13 @@ class HMEOutputDevice(AbstractOutputDevice):
         return PCM_SILENCE_BYTE * self.hme_chunk_size
 
     async def _send_chunk(self, audio_data: bytes) -> None:
-        """Send audio chunk to both HME and local speaker if enabled."""
+        """Send audio chunk with lock protection"""
         try:
-            if self.audio_websocket:
-                await self.audio_websocket.send(audio_data)
-            else:
-                logger.warning("No audio WebSocket connection, skipping send")
+            async with self.audio_websocket_lock:
+                if self.audio_websocket:
+                    await self.audio_websocket.send(audio_data)
+                else:
+                    logger.warning("No audio WebSocket connection, skipping send")
         except Exception as e:
             logger.error(f"Error sending audio chunk: {e}")
             if "code = 1000" not in str(e):
@@ -163,9 +168,7 @@ class HMEOutputDevice(AbstractOutputDevice):
                     )
 
                     if item.is_interrupted():
-                        item.on_interrupt()
-                        item.state = ChunkState.INTERRUPTED
-                        logger.debug("[HME] Interrupted audio chunk")
+                        self._interrupt_audio_chunk(item)
                         continue
 
                     mono_audio: bytes = self._get_audio_data(item)
@@ -174,18 +177,28 @@ class HMEOutputDevice(AbstractOutputDevice):
                     # if we got a real chunk, we're speaking
                     if is_real_chunk:
                         self.is_speaking = True
+                        self.conversation.mark_last_action_timestamp()
 
+                    # Create tasks for concurrent audio output
+                    tasks = []
+
+                    # Add speaker output task if enabled
                     if (
                         self.enable_local_playback
                         and self.speaker_output
                         and not item.is_interrupted()
                     ):
-                        await self.speaker_output.play(mono_audio)
+                        tasks.append(self.speaker_output.play(mono_audio))
 
-                    # if we're not interrupted, send the chunk to HME
+                    # Add HME output task if not interrupted
                     if not item.is_interrupted():
                         stereo_audio = await self._convert_mono_to_stereo(mono_audio)
-                        await self._send_chunk(stereo_audio)
+                        tasks.append(self._send_chunk(stereo_audio))
+                        item.payload.on_play()
+
+                    # Run tasks concurrently if any exist
+                    if tasks:
+                        await asyncio.gather(*tasks)
 
                 except asyncio.TimeoutError:
                     # No item retrieved within the chunk interval, means gap in speech
