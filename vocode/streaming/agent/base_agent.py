@@ -440,7 +440,7 @@ class RespondAgent(BaseAgent[AgentConfigType]):
                     )
                 )
 
-            logger.debug("Responding to transcription")
+            logger.debug(f"Responding to transcription: {transcription.message}")
             should_stop = False
             if self.agent_config.generate_responses:
                 # TODO (EA): this is quite ugly but necessary to have the agent act properly after an action completes

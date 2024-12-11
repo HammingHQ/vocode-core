@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import audioop
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import TYPE_CHECKING, Generic, Optional, TypeVar, Union
 
-from vocode.streaming.models.audio import AudioEncoding
+from loguru import logger
+
 from vocode.streaming.models.transcriber import TranscriberConfig, Transcription
 from vocode.streaming.utils.speed_manager import SpeedManager
 from vocode.streaming.utils.worker import AbstractWorker, AsyncWorker, ThreadAsyncWorker
@@ -59,7 +60,10 @@ class AbstractTranscriber(Generic[TranscriberConfigType], AbstractWorker[bytes])
             self.consume_nonblocking(self.create_silent_chunk(len(chunk)))
 
     def produce_nonblocking(self, item: Transcription):
-        self.consumer.consume_nonblocking(item)
+        if item.message.strip():
+            self.consumer.consume_nonblocking(item)
+        else:
+            logger.warning(f"Ignoring empty transcription: {item.message}")
 
 
 class BaseAsyncTranscriber(AbstractTranscriber[TranscriberConfigType], AsyncWorker[bytes]):  # type: ignore
