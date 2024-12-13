@@ -253,7 +253,10 @@ class AzureSynthesizer(BaseSynthesizer[AzureSynthesizerConfig]):
     ) -> SynthesisResult:
         # offset = int(self.OFFSET_MS * (self.synthesizer_config.sampling_rate / 1000))
         offset = 0
-        logger.debug(f"Synthesizing message: {message}")
+        logger.debug(
+            f"Synthesizing message: {message} {chunk_size} is_first_text_chunk: "
+            f"{is_first_text_chunk} is_sole_text_chunk: {is_sole_text_chunk}"
+        )
 
         # Azure will return no audio for certain strings like "-", "[-", and "!"
         # which causes the `chunk_generator` below to hang. Return an empty
@@ -268,26 +271,36 @@ class AzureSynthesizer(BaseSynthesizer[AzureSynthesizerConfig]):
             audio_data_stream: speechsdk.AudioDataStream, chunk_transform=lambda x: x
         ):
             audio_buffer = bytes(chunk_size)
-            filled_size = await asyncio.get_event_loop().run_in_executor(
-                self.thread_pool_executor,
-                lambda: audio_data_stream.read_data(audio_buffer),
-            )
+            try:
+                filled_size = await asyncio.get_event_loop().run_in_executor(
+                    self.thread_pool_executor,
+                    lambda: audio_data_stream.read_data(audio_buffer),
+                )
 
-            await self._check_stream_for_errors(audio_data_stream)
-            if filled_size != chunk_size:
-                yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer[offset:]), True)
-                return
-            else:
-                yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer[offset:]), False)
-            while True:
-                audio_buffer = bytes(chunk_size)
-                filled_size = audio_data_stream.read_data(audio_buffer)
+                await self._check_stream_for_errors(audio_data_stream)
                 if filled_size != chunk_size:
-                    yield SynthesisResult.ChunkResult(
-                        chunk_transform(audio_buffer[: filled_size - offset]), True
-                    )
-                    break
-                yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer), False)
+
+                    yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer[offset:]), True)
+                    return
+                else:
+
+                    yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer[offset:]), False)
+
+                while True:
+                    audio_buffer = bytes(chunk_size)
+                    filled_size = audio_data_stream.read_data(audio_buffer)
+
+                    if filled_size != chunk_size:
+
+                        yield SynthesisResult.ChunkResult(
+                            chunk_transform(audio_buffer[: filled_size - offset]), True
+                        )
+                        break
+
+                    yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer), False)
+            except Exception as e:
+                logger.error(f"[Azure] Error in chunk generator: {e}")
+                raise
 
         word_boundary_event_pool = WordBoundaryEventPool()
         self.synthesizer.synthesis_word_boundary.connect(
