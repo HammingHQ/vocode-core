@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from vocode.logging import configure_pretty_logging
 from vocode.streaming.action.end_conversation import EndConversationVocodeActionConfig
 from vocode.streaming.agent.default_factory import DefaultAgentFactory
-from vocode.streaming.hme.constants import AUDIO_ENCODING, DEFAULT_CHUNK_SIZE, DEFAULT_SAMPLING_RATE
+from vocode.streaming.hme.constants import AUDIO_ENCODING, DEFAULT_CHUNK_SIZE
 from vocode.streaming.hme.hme_conversation import HMEConversation
 from vocode.streaming.models.actions import (
     PhraseBasedActionTrigger,
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     store_id: str = os.getenv("STORE_ID", "default-store")
     audio_mode: str = os.getenv("AUDIO_MODE", "Fixed")
     public_key_path: str = os.getenv("PUBLIC_KEY_PATH", "pubkey.pem")
-    conversation_timeout: int = int(os.getenv("CONVERSATION_TIMEOUT", "600"))  # seconds
+    conversation_timeout: int = int(os.getenv("CONVERSATION_TIMEOUT", "120"))  # seconds
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -57,15 +57,22 @@ async def wait_for_termination(conversation: HMEConversation, timeout: int):
 
 
 async def run_conversation(settings: Settings):
-    try:
-        conversation = create_conversation(settings)
-        await conversation.start()
-        await wait_for_termination(conversation, settings.conversation_timeout)
-    except Exception as e:
-        logger.error(f"Error in conversation: {e}")
-        if conversation:
-            await conversation.terminate()
-        raise
+    while True:
+        try:
+            conversation = create_conversation(settings)
+            await conversation.start()
+            await wait_for_termination(conversation, settings.conversation_timeout)
+            break  # Exit loop if conversation completes normally
+        except asyncio.TimeoutError:
+            logger.warning("Conversation timed out, restarting...")
+            if conversation:
+                await conversation.terminate()
+            continue  # Restart on timeout
+        except Exception as e:
+            logger.error(f"Error in conversation: {e}")
+            if conversation:
+                await conversation.terminate()
+            raise  # Re-raise other exceptions
 
 
 def create_conversation(settings: Settings) -> HMEConversation:
@@ -75,12 +82,14 @@ def create_conversation(settings: Settings) -> HMEConversation:
     output_device = create_output_device(settings)
     transcriber_config = DeepgramTranscriberConfig.from_input_audio_config(
         input_audio_config=InputAudioConfig(
-            sampling_rate=DEFAULT_SAMPLING_RATE,
+            sampling_rate=24000,
             audio_encoding=AUDIO_ENCODING,
             chunk_size=DEFAULT_CHUNK_SIZE,
         ),
         endpointing_config=PunctuationEndpointingConfig(),
         api_key=os.getenv("DEEPGRAM_API_KEY"),
+        mute_during_speech=True,
+        model="nova-2-drivethru",
     )
     agent_config = ChatGPTAgentConfig(
         model_name="gpt-4o-mini",
@@ -89,7 +98,7 @@ def create_conversation(settings: Settings) -> HMEConversation:
         You want to order a classic burger with cheese and a side of fries.
         Respond naturally to the drive-through worker's questions, be concise and direct, preferring short YES/NO answers.
         Keep responses concise and direct, as if speaking through a drive-through speaker.
-        If you hear a partial or cut-off response from the worker, wait for them to repeat or clarify rather than taking on their role.
+        If you hear a partial or cut-off response from the worker, ask for them to repeat or clarify rather than taking on their role.
         Never pretend to be the drive-through worker - you are always the customer.""",
         actions=[
             EndConversationVocodeActionConfig(
@@ -97,13 +106,26 @@ def create_conversation(settings: Settings) -> HMEConversation:
                     config=PhraseBasedActionTriggerConfig(
                         phrase_triggers=[
                             PhraseTrigger(
-                                phrase="goodbye", conditions=["phrase_condition_type_contains"]
-                            )
+                                phrase="Goodbye", conditions=["phrase_condition_type_contains"]
+                            ),
+                            PhraseTrigger(
+                                phrase="Thank you", conditions=["phrase_condition_type_contains"]
+                            ),
+                            PhraseTrigger(
+                                phrase="Pull forward", conditions=["phrase_condition_type_contains"]
+                            ),
                         ]
                     )
                 )
             )
         ],
+        end_conversation_on_action=True,
+        end_conversation_on_timeout=True,
+        timeout_seconds=1.0,
+        initial_message_delay=1.0,
+        allowed_idle_time_seconds=1.0,
+        num_check_human_present_times=3,
+        interrupt_sensitivity="low",
     )
     synthesizer_config = AzureSynthesizerConfig.from_output_device(
         output_device=output_device,
@@ -111,7 +133,7 @@ def create_conversation(settings: Settings) -> HMEConversation:
         trailing_silence_seconds=0.5,
     )
 
-    return HMEConversation(
+    conversation = HMEConversation(
         aot_provider_url=settings.aot_provider_url,
         client_id=settings.client_id,
         store_id=settings.store_id,
@@ -120,11 +142,13 @@ def create_conversation(settings: Settings) -> HMEConversation:
         agent=agent_factory.create_agent(agent_config),
         synthesizer=synthesizer_factory.create_synthesizer(synthesizer_config),
     )
+    output_device.conversation = conversation
+    return conversation
 
 
 def create_output_device(settings: Settings) -> HMEOutputDevice:
     return HMEOutputDevice(
-        sampling_rate=DEFAULT_SAMPLING_RATE,
+        sampling_rate=24000,
         audio_encoding=AUDIO_ENCODING,
         audio_mode=settings.audio_mode,
         enable_local_playback=True,
@@ -133,6 +157,8 @@ def create_output_device(settings: Settings) -> HMEOutputDevice:
 
 async def main():
     settings = Settings()
+    loop = asyncio.get_event_loop()
+    loop.set_debug(True)
     await run_conversation(settings)
 
 

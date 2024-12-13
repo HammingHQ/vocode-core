@@ -443,108 +443,127 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
                     num_buffer_utterances = 1
                     time_silent = 0.0
                     words_buffer = []
-                    is_final_ts: Optional[datetime] = None
+                    last_transcript = ""
+                    last_message_time = now()
 
                     while not self._ended:
                         try:
-                            msg = await ws.recv()
+                            msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                            last_message_time = now()
                             if not self.start_receiving_ts:
                                 self.start_receiving_ts = now()
+                        except asyncio.TimeoutError:
+                            current_time = now()
+                            silence_duration = (current_time - last_message_time).total_seconds()
+                            logger.debug(
+                                f"Websocket audio timeout, Silence duration: {silence_duration}s"
+                            )
+
+                            if (
+                                buffer
+                                and silence_duration
+                                > self.transcriber_config.endpointing_config.time_cutoff_seconds
+                            ):
+                                logger.debug(
+                                    f"No messages received for {silence_duration}s, treating as endpoint"
+                                )
+                                self.produce_nonblocking(
+                                    Transcription(
+                                        message=buffer,
+                                        confidence=buffer_avg_confidence,
+                                        is_final=True,
+                                        duration_seconds=self.calculate_duration(words_buffer),
+                                    )
+                                )
+                                buffer = ""
+                                buffer_avg_confidence = 0.0
+                                num_buffer_utterances = 1
+                                words_buffer = []
+                                time_silent = 0.0
+                                last_transcript = ""
+                                continue
+                            continue
                         except Exception as e:
                             logger.debug(f"Got error {e} in Deepgram receiver")
                             break
-                        data = json.loads(msg)
 
+                        data = json.loads(msg)
                         logger.debug(f"[DEEPGRAM] Received data: {data}")
 
-                        if "start" in data and "duration" in data:
-                            self._track_transcription_latency(
-                                start=data["start"],
-                                duration=data["duration"],
-                            )
-
-                        deepgram_response: Union[DeepgramUtteranceEnd, DeepgramTranscriptionResult]
-
-                        if data["type"] == "Results":
-                            deepgram_response = DeepgramTranscriptionResult(
+                        if isinstance(data, dict) and data.get("type") == "Results":
+                            response = DeepgramTranscriptionResult(
                                 is_final=data["is_final"],
                                 speech_final=data["speech_final"],
                                 top_choice=data["channel"]["alternatives"][0],
                                 duration=data["duration"],
                                 start=data["start"],
                             )
-                        elif data["type"] == "UtteranceEnd":
-                            deepgram_response = DeepgramUtteranceEnd()
-                        else:
-                            logger.info(f"Ignoring deepgram response type: {data['type']}")
-                            continue
 
-                        if (
-                            isinstance(deepgram_response, DeepgramTranscriptionResult)
-                            and deepgram_response.top_choice.transcript
-                            and deepgram_response.top_choice.confidence > 0.0
-                            and deepgram_response.is_final
-                        ):
-                            words = deepgram_response.top_choice.words
-                            if words:
-                                words_buffer.extend(words)
-                            buffer = f"{buffer} {deepgram_response.top_choice.transcript}"
-                            if buffer_avg_confidence == 0:
-                                buffer_avg_confidence = deepgram_response.top_choice.confidence
-                            else:
-                                buffer_avg_confidence = (
-                                    buffer_avg_confidence
-                                    + deepgram_response.top_choice.confidence
-                                    / (num_buffer_utterances)
-                                ) * (num_buffer_utterances / (num_buffer_utterances + 1))
-                            num_buffer_utterances += 1
-
-                            is_final_ts = now()
-
-                        if buffer and self.is_endpoint(buffer, deepgram_response, time_silent):
-                            output_ts = now()
-                            self._track_latency_of_conversation(
-                                is_final_ts=is_final_ts,
-                                output_ts=output_ts,
+                            logger.debug(
+                                "Processing Deepgram response",
+                                is_final=response.is_final,
+                                speech_final=response.speech_final,
+                                transcript=response.top_choice.transcript,
                             )
-                            self.produce_nonblocking(
-                                Transcription(
-                                    message=buffer,
-                                    confidence=buffer_avg_confidence,
-                                    is_final=True,
-                                    duration_seconds=self.calculate_duration(words_buffer),
-                                )
-                            )
-                            buffer = ""
-                            buffer_avg_confidence = 0.0
-                            num_buffer_utterances = 1
-                            time_silent = 0.0
-                            words_buffer = []
-                            is_final_ts = None
 
-                        if isinstance(deepgram_response, DeepgramTranscriptionResult):
                             if (
-                                isinstance(deepgram_response, DeepgramTranscriptionResult)
-                                and deepgram_response.top_choice.transcript
-                                and deepgram_response.top_choice.confidence > 0.0
+                                response.top_choice.transcript
+                                and response.top_choice.confidence > 0.0
+                                and response.top_choice.transcript
+                                != last_transcript  # Check for duplicates
                             ):
-                                if not deepgram_response.is_final:
-                                    interim_message = (
-                                        f"{buffer} {deepgram_response.top_choice.transcript}"
+                                # Update buffer with new transcription
+                                if buffer:  # If buffer exists, add space
+                                    buffer = f"{buffer} {response.top_choice.transcript}".strip()
+                                else:  # If buffer is empty, start fresh
+                                    buffer = response.top_choice.transcript.strip()
+
+                                buffer_avg_confidence = (
+                                    buffer_avg_confidence * num_buffer_utterances
+                                    + response.top_choice.confidence
+                                ) / (num_buffer_utterances + 1)
+                                num_buffer_utterances += 1
+                                words_buffer.extend(response.top_choice.words)
+                                time_silent = self.calculate_time_silent(response)
+                                last_transcript = (
+                                    response.top_choice.transcript
+                                )  # Update last transcript
+
+                                # Check if this is an endpoint
+                                is_endpoint, params = self._compute_is_endpoint_and_log_params(
+                                    buffer, response, time_silent
+                                )
+
+                                if is_endpoint:
+                                    logger.debug(
+                                        "Endpoint detected",
+                                        endpoint_type=params.get("endpoint_type"),
+                                        buffer=buffer,
                                     )
-                                else:
-                                    interim_message = buffer
 
                                 self.produce_nonblocking(
                                     Transcription(
-                                        message=interim_message,
-                                        confidence=deepgram_response.top_choice.confidence,
-                                        is_final=False,
+                                        message=buffer,
+                                        confidence=buffer_avg_confidence,
+                                        is_final=is_endpoint,
+                                        duration_seconds=(
+                                            self.calculate_duration(words_buffer)
+                                            if is_endpoint
+                                            else None
+                                        ),
                                     )
                                 )
-                                time_silent = self.calculate_time_silent(deepgram_response)
+
+                                # Reset buffers if endpoint detected
+                                if is_endpoint:
+                                    buffer = ""
+                                    buffer_avg_confidence = 0.0
+                                    num_buffer_utterances = 1
+                                    words_buffer = []
+                                    time_silent = 0.0
+                                    last_transcript = ""  # Reset last transcript
                             else:
-                                time_silent += deepgram_response.duration
+                                time_silent += response.duration
 
                     logger.debug("Terminating Deepgram transcriber receiver")
 

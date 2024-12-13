@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+import zlib
 from datetime import datetime
 from enum import Enum
 from typing import Dict, Optional
@@ -11,6 +12,7 @@ from websockets.exceptions import WebSocketException
 
 from vocode.streaming.output_device.hme_output_device import HMEOutputDevice
 from vocode.streaming.streaming_conversation import StreamingConversation
+from vocode.streaming.transcriber.deepgram_transcriber import DeepgramTranscriber
 from vocode.streaming.utils.create_task import asyncio_create_task
 from vocode.utils.gen_encrypted_token import generate_encrypted_token
 
@@ -30,6 +32,7 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         audio_websocket (Optional[ClientConnection]): Audio WebSocket connection
         message_websocket (Optional[ClientConnection]): Message WebSocket connection
         auth_token (Optional[str]): JWT auth token for WebSocket connections
+        audio_buffer (asyncio.Queue): Queue for buffering incoming audio frames
     """
 
     def __init__(
@@ -59,6 +62,10 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         self.audio_frame_received = asyncio.Event()
         self.idle_time_threshold = idle_timeout_seconds
 
+        # Audio buffer queue
+        self.audio_buffer: asyncio.Queue[bytes] = asyncio.Queue()
+        self.is_processing_audio = True
+
     # Core lifecycle methods
 
     async def start(self):
@@ -74,7 +81,7 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         # Start WebSocket tasks
         self.audio_task = asyncio_create_task(self.run_audio_task())
         self.message_task = asyncio_create_task(self.run_message_task())
-
+        self.audio_consumer_task = asyncio_create_task(self.run_audio_consumer_task())
         # Wait for both connections and initial setup
         await asyncio.gather(
             self.audio_connected.wait(),
@@ -93,6 +100,7 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         except Exception as e:
             logger.error(f"Error sending depart message: {e}")
 
+        self.is_processing_audio = False
         if self.audio_websocket:
             await self.audio_websocket.wait_closed()
         if self.message_websocket:
@@ -135,10 +143,6 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         safe_headers = {**headers, "auth-token": "[REDACTED]"}
         logger.debug(f"[HME] Audio headers: {safe_headers}")
 
-        # Open file for writing audio data
-        audio_file = open(f"audio_{self.id}.raw", "wb")
-        logger.info(f"[HME] Writing audio to file: audio_{self.id}.raw")
-
         try:
             async with connect(url, additional_headers=headers) as websocket:
                 logger.info("[HME] Audio WebSocket connected")
@@ -147,36 +151,35 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
                 self.audio_connected.set()
 
                 async for message in websocket:
-                    # Let output device handle all audio frame processing
+                    audio_data = await self._validate_audio_frame(message)
 
-                    # Skip header bytes (16 bytes: 4 for CRC, 1 for lane, 11 padding)
-                    audio_data = message[16:]
-                    self.receive_audio(audio_data)
-                    logger.debug(f"[HME] Audio frame received: {len(audio_data)} bytes")
+                    if audio_data:
+                        if not self.audio_frame_received.is_set():
+                            self.audio_frame_received.set()
 
-                    # Write audio data to file
-                    audio_file.write(audio_data)
-                    audio_file.flush()
+                        # Process audio directly instead of buffering
+                        await self.audio_buffer.put(audio_data)
 
-                    # Play incoming audio through local speaker if enabled
-                    if (
-                        self.output_device.enable_local_playback
-                        and self.output_device.speaker_output
-                    ):
 
-                        await self.output_device.speaker_output.play(audio_data)
-                        logger.debug("[HME] Played incoming audio through speaker")
-
-                    if not self.audio_frame_received.is_set():
-                        self.audio_frame_received.set()
 
         except Exception as e:
             self._audio_error = e
             self.audio_connected.set()  # Unblock start() but with error
             raise
-        finally:
-            audio_file.close()
-            logger.info(f"[HME] Closed audio file: audio_{self.id}.raw")
+
+    async def run_audio_consumer_task(self):
+        """Consume audio data from the buffer and process it."""
+        while True:
+            audio_data = await self.audio_buffer.get()
+            self.receive_audio(audio_data)
+
+            # Play incoming audio through local speaker if enabled
+            if (
+                self.output_device.enable_local_playback
+                and self.output_device.speaker_output
+            ):
+                await self.output_device.speaker_output.play(audio_data)
+                logger.debug("[HME] Played incoming audio through speaker")
 
     async def run_message_task(self):
         """Maintain message WebSocket connection and handle incoming messages."""
@@ -193,17 +196,17 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
                 self.message_connected.set()
 
                 async for message in websocket:
-                    logger.info(f"Received message: {message}")
                     try:
                         parsed_message = json.loads(message)
-                        logger.debug(f"Parsed message: {json.dumps(parsed_message, indent=2)}")
+                        topic = parsed_message.get("topic")
+
+                        if topic == "aot/request/audio-interruption":
+                            logger.info("[HME] Received audio interruption request")
+                            await self._drain_audio_buffer()
+
                     except json.JSONDecodeError:
                         logger.warning(f"Failed to parse message as JSON: {message}")
                         continue
-
-                    topic = parsed_message.get("topic")
-                    if topic == "aot/request/audio-interruption":
-                        logger.info("[HME] Received audio interruption request")
 
         except WebSocketException as e:
             logger.error(f"Message WebSocket error: {str(e)}")
@@ -211,6 +214,17 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         except Exception as e:
             logger.error(f"Unexpected error in message task: {str(e)}")
             raise
+
+    async def _drain_audio_buffer(self):
+        """Drain the audio buffer queue when interrupted."""
+        logger.info("[HME] Draining audio buffer")
+        while not self.audio_buffer.empty():
+            try:
+                item = self.audio_buffer.get_nowait()
+                self._interrupt_audio_chunk(item)
+            except asyncio.QueueEmpty:
+                break
+        logger.info("[HME] Audio buffer drained")
 
     # Message handling methods
 
@@ -295,3 +309,27 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
             await self.run_audio_task()
         except Exception as e:
             logger.error(f"Failed to reconnect audio: {e}")
+
+    async def _validate_audio_frame(self, message: bytes) -> Optional[bytes]:
+        if len(message) < 17:
+            logger.warning(f"Audio frame too small: {len(message)} bytes")
+            return None
+
+        # Extract frame components
+        crc = message[:4]
+        audio_bytes = message[16:]  # Skip 16 byte header
+
+        # Validate CRC checksum
+        computed_crc = zlib.crc32(audio_bytes) & 0xFFFFFFFF
+        received_crc = int.from_bytes(crc, byteorder="big")
+
+        if computed_crc != received_crc:
+            logger.warning(
+                "CRC validation failed",
+                frame_size=len(message),
+                computed_crc=hex(computed_crc),
+                received_crc=hex(received_crc),
+            )
+            return None
+
+        return audio_bytes

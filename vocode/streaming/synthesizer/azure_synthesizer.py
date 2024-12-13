@@ -208,12 +208,8 @@ class AzureSynthesizer(BaseSynthesizer[AzureSynthesizerConfig]):
         return ssml
 
     def synthesize_ssml(self, ssml: str) -> speechsdk.AudioDataStream:
-        logger.debug(f"[Azure] Calling Azure API with SSML length: {len(ssml)}")
         result = self.synthesizer.start_speaking_ssml_async(ssml).get()
-        logger.debug("[Azure] Got response from Azure API")
-        stream = speechsdk.AudioDataStream(result)
-        logger.debug("[Azure] Created audio data stream")
-        return stream
+        return speechsdk.AudioDataStream(result)
 
     def ready_synthesizer(self, chunk_size: int):
         # TODO: remove warming up the synthesizer for now
@@ -281,10 +277,9 @@ class AzureSynthesizer(BaseSynthesizer[AzureSynthesizerConfig]):
                     lambda: audio_data_stream.read_data(audio_buffer),
                 )
 
-
                 await self._check_stream_for_errors(audio_data_stream)
                 if filled_size != chunk_size:
-  
+
                     yield SynthesisResult.ChunkResult(chunk_transform(audio_buffer[offset:]), True)
                     return
                 else:
@@ -294,7 +289,6 @@ class AzureSynthesizer(BaseSynthesizer[AzureSynthesizerConfig]):
                 while True:
                     audio_buffer = bytes(chunk_size)
                     filled_size = audio_data_stream.read_data(audio_buffer)
-
 
                     if filled_size != chunk_size:
 

@@ -1,5 +1,4 @@
 import asyncio
-import zlib
 from typing import Optional
 
 import sounddevice as sd
@@ -49,7 +48,6 @@ class HMEOutputDevice(AbstractOutputDevice):
         self.hme_chunk_size = 1920
         self.chunk_interval = 0.03
         self._audio_task: Optional[asyncio.Task] = None
-        self._ensure_audio_task_lock = asyncio.Lock()
         self.enable_local_playback = enable_local_playback
         self.speaker_output = None
         self._ready = asyncio.Event()
@@ -281,15 +279,14 @@ class HMEOutputDevice(AbstractOutputDevice):
             self._pending_interrupt = True
         else:
             logger.debug("[HME] Currently silent, draining queue")
-            # TODO (@orban) - do we need to drain the queue here?
             self._drain_audio_chunk_queue(self._input_queue)
 
     async def _ensure_audio_task_running(self) -> None:
         """Ensure the audio task is running, restart if needed."""
-        async with self._ensure_audio_task_lock:
-            if not self._audio_task or self._audio_task.done():
-                logger.info("[HME] Starting/restarting audio output loop")
-                self._audio_task = asyncio_create_task(self._run_loop())
+        # Remove lock, simple check is sufficient
+        if not self._audio_task or self._audio_task.done():
+            logger.info("[HME] Starting/restarting audio output loop")
+            self._audio_task = asyncio_create_task(self._run_loop())
 
     def _is_silence(self, mono_audio: bytes) -> bool:
         # If the data is entirely silence bytes, consider it silence
@@ -302,29 +299,6 @@ class HMEOutputDevice(AbstractOutputDevice):
         )
         await self._input_queue.put(item)
 
-    async def _validate_audio_frame(self, message: bytes) -> Optional[bytes]:
-        if len(message) < 17:
-            logger.warning(f"Audio frame too small: {len(message)} bytes")
-            return None
-
-        # Extract frame components
-        crc = message[:4]
-        audio_bytes = message[16:]  # Skip 16 byte header
-
-        # Validate CRC checksum
-        computed_crc = zlib.crc32(audio_bytes) & 0xFFFFFFFF
-        received_crc = int.from_bytes(crc, byteorder="big")
-
-        if computed_crc != received_crc:
-            logger.warning(
-                "CRC validation failed",
-                frame_size=len(message),
-                computed_crc=hex(computed_crc),
-                received_crc=hex(received_crc),
-            )
-            return None
-
-        return audio_bytes
-
+   
     async def wait_for_ready(self) -> None:
         await self._ready.wait()

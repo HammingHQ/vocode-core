@@ -268,23 +268,31 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             )
 
         async def process(self, transcription: Transcription):
+            logger.debug(
+                f"Processing transcription - is_final: {transcription.is_final}, "
+                f"message: {transcription.message}, "
+                f"is_human_speaking: {self.conversation.is_human_speaking}, "
+                f"is_bot_speaking: {self.is_bot_in_medias_res()}"
+            )
             # Deduplicate transcriptions within a small time window
             current_time = time.time()
             if (
                 self.last_transcription == transcription.message
                 and self.last_transcription_time
                 and current_time - self.last_transcription_time < 0.5
+                and not transcription.is_final
             ):
                 logger.debug(f"Ignoring duplicate transcription: {transcription.message}")
                 return
 
             self.last_transcription = transcription.message
             self.last_transcription_time = current_time
-
-            self.conversation.mark_last_action_timestamp()
             if transcription.message.strip() == "":
                 logger.info("Ignoring empty transcription")
                 return
+
+            self.conversation.mark_last_action_timestamp()
+
             # ignore utterances during the initial message but still add them to the transcript
             initial_message_ongoing = not self.conversation.initial_message_tracker.is_set()
             if initial_message_ongoing or self.should_ignore_utterance(transcription):
@@ -325,10 +333,14 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             if self.conversation.is_human_speaking:
                 logger.debug("Human started speaking")
                 if bot_was_in_medias_res:
+                    logger.debug("Bot was in medias res, sending interrupt")
                     self.conversation.current_transcription_is_interrupt = (
                         await self.conversation.broadcast_interrupt()
                     )
                     self.has_associated_unignored_utterance = not transcription.is_final
+                    logger.debug(
+                        f"self.conversation.current_transcription_is_interrupt: {self.conversation.current_transcription_is_interrupt}"
+                    )
                     if self.conversation.current_transcription_is_interrupt:
                         logger.debug("sent interrupt")
                 else:
@@ -1316,8 +1328,6 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
         processed_events: List[asyncio.Event] = []
         interrupted_before_all_chunks_sent = False
         async for chunk_idx, chunk_result in enumerate_async_iter(synthesis_result.chunk_generator):
-            logger.debug(f"Generated audio chunk {chunk_idx}: {len(chunk_result.chunk)} bytes")
-
             if stop_event.is_set():
                 logger.debug("Interrupted before all chunks were sent")
                 interrupted_before_all_chunks_sent = True
@@ -1342,7 +1352,6 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
                         interruption_event=stop_event,
                     ),
                 )
-                logger.debug(f"Sent chunk {chunk_idx} to output device")
 
             audio_chunks.append(audio_chunk)
             processed_events.append(processed_event)

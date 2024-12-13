@@ -9,6 +9,7 @@ class InputAudioConfig(BaseModel):
     audio_encoding: AudioEncoding
     chunk_size: int
     downsampling: Optional[int] = None
+    mute_during_speech: bool = False
 
 
 class OutputAudioConfig(BaseModel):
