@@ -38,11 +38,21 @@ agent_factory = DefaultAgentFactory()
 synthesizer_factory = DefaultSynthesizerFactory()
 
 
+DRIVE_THROUGH_CUSTOMER_PROMPT = """
+You are a drive-through customer at a fast food restaurant.
+You want to order a classic burger with cheese and a side of fries.
+You are very quick and concise in your responses.
+If you hear a partial or cut-off response from the worker, ask for them to repeat or clarify.
+Never respond to incomplete sentences or questions.
+Say "Goodbye" after completing your order.
+"""
+
+
 class Settings(BaseSettings):
 
     aot_provider_url: str = os.getenv("AOT_PROVIDER_URL", "ws://localhost:8080")
     client_id: str = os.getenv("CLIENT_ID", "<client_id>")
-    store_id: str = os.getenv("STORE_ID", "default-store")
+    store_id: str = os.getenv("STORE_ID", "default-store-2")
     audio_mode: str = os.getenv("AUDIO_MODE", "Fixed")
     public_key_path: str = os.getenv("PUBLIC_KEY_PATH", "pubkey.pem")
 
@@ -67,26 +77,16 @@ def create_conversation(settings: Settings) -> HMEConversation:
         api_key=os.getenv("DEEPGRAM_API_KEY"),
     )
     agent_config = ChatGPTAgentConfig(
+        model_name="gpt-4o",
         openai_api_key=os.getenv("OPENAI_API_KEY"),
-        # initial_message=BaseMessage(text="What up?"),
-        prompt_preamble="""Order one burger and a side of fries.""",
-        actions=[
-            EndConversationVocodeActionConfig(
-                action_trigger=PhraseBasedActionTrigger(
-                    config=PhraseBasedActionTriggerConfig(
-                        phrase_triggers=[
-                            PhraseTrigger(
-                                phrase="goodbye", conditions=["phrase_condition_type_contains"]
-                            )
-                        ]
-                    )
-                )
-            )
-        ],
+        prompt_preamble=DRIVE_THROUGH_CUSTOMER_PROMPT,
+        end_conversation_on_goodbye=True,
+        goodbye_phrases=["goodbye", "bye", "see you", "see ya", "see you later"],
+        allowed_idle_time_seconds=5,
     )
     synthesizer_config = AzureSynthesizerConfig.from_output_device(
         output_device=output_device,
-        voice_name="en-US-SteffanNeural",
+        voice_name="en-US-TonyNeural",
     )
 
     return HMEConversation(

@@ -40,10 +40,6 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
         self.message_connected = asyncio.Event()
 
     async def start(self):
-        # await super().start()
-        # await asyncio.sleep(2)
-        # self.receive_fake_audio()
-
         self.audio_task = asyncio_create_task(self.run_audio_task())
         self.message_task = asyncio_create_task(self.run_message_task())
 
@@ -82,21 +78,7 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
                 else:
                     logger.info(f"Received audio message with valid CRC={computed_crc}")
                 self.receive_audio(audio_bytes)
-    
-
-    # def receive_fake_audio(self):
-    #     with open("lilac.pcm", "rb") as f:
-    #         data = f.read()
-    #         self.receive_audio(data)
-    #         # chunk_size = 16000
-    #         # for i in range(0, len(data), chunk_size):
-    #         #     chunk = data[i:i + chunk_size]
-    #         #     self.receive_audio(chunk)
-
-    # def receive_audio(self, audio_bytes: bytes):
-    #     # with open("lilac.wav", "ab") as f:
-    #     #     f.write(audio_bytes)
-    #     super().receive_audio(audio_bytes)
+                asyncio.create_task(self.output_device.speaker_output.play(audio_bytes))
 
 
     async def run_message_task(self):
@@ -110,7 +92,7 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
             async for message in websocket:
                 logger.info(f"Received message: {message}")
 
-    async def send_arrived_message(self):
+    async def send_arrived_message(self): 
         logger.info(f"Vehicle arrived: carID={self.id}")
         arrive_message = {
             "topic": "NEXEO/request/lane1/arrive",
@@ -126,6 +108,8 @@ class HMEConversation(StreamingConversation[HMEOutputDevice]):
                 "msgType": "request",
             },
         }
+        logger.info(f"sending: {arrive_message}")
+        await asyncio.sleep(1)
         await self.send_message(json.dumps(arrive_message))
 
     async def send_message(self, message: str):
