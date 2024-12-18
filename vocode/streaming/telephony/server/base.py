@@ -162,6 +162,7 @@ class TelephonyServer:
                 asyncio_create_task(self._start_recording(twilio_config, twilio_sid))
             else:
                 agent_config = inbound_call_config.agent_config
+                ivr_dag = inbound_call_config.ivr_dag
             call_config = TwilioCallConfig(
                 transcriber_config=inbound_call_config.transcriber_config
                 or TwilioCallConfig.default_transcriber_config(),
