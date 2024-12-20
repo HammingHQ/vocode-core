@@ -1,9 +1,9 @@
 import asyncio
 import json
+import random
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Union
 from urllib.parse import urlencode
-import random
 
 import sentry_sdk
 import websockets
@@ -442,6 +442,7 @@ class DeepgramTranscriber(BaseAsyncTranscriber[DeepgramTranscriberConfig]):
                             logger.debug(f"Got error {e} in Deepgram receiver")
                             break
                         data = json.loads(msg)
+                        logger.info(f"[DEEPGRAM]Received deepgram message: {data}")
 
                         if "start" in data and "duration" in data:
                             self._track_transcription_latency(

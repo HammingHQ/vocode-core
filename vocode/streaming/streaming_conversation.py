@@ -401,7 +401,7 @@ class StreamingConversation(AudioPipeline[OutputDeviceType]):
             super().__init__()
             self.conversation = conversation
             self.interruptible_event_factory = interruptible_event_factory
-            self.chunk_size = self.conversation._get_synthesizer_chunk_size()
+            self.chunk_size = 960 # self.conversation._get_synthesizer_chunk_size()
             self.last_agent_response_tracker: Optional[asyncio.Event] = None
             self.is_first_text_chunk = True
 
